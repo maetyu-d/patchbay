@@ -7,6 +7,49 @@
 #include "TrackView.h"
 #include <optional>
 
+class InspectorResizeHandle final : public juce::Component
+{
+public:
+    std::function<void(const juce::MouseEvent&)> onMouseMoveCallback;
+    std::function<void(const juce::MouseEvent&)> onMouseDownCallback;
+    std::function<void(const juce::MouseEvent&)> onMouseDragCallback;
+    std::function<void(const juce::MouseEvent&)> onMouseUpCallback;
+
+    void paint(juce::Graphics& g) override
+    {
+        g.setColour(isMouseOverOrDragging() ? juce::Colour(0xff4f6b8a) : juce::Colour(0xff2b3647));
+        g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(3.0f, 6.0f), 2.0f);
+    }
+
+    void mouseMove(const juce::MouseEvent& event) override
+    {
+        if (onMouseMoveCallback)
+            onMouseMoveCallback(event);
+        repaint();
+    }
+
+    void mouseDown(const juce::MouseEvent& event) override
+    {
+        if (onMouseDownCallback)
+            onMouseDownCallback(event);
+        repaint();
+    }
+
+    void mouseDrag(const juce::MouseEvent& event) override
+    {
+        if (onMouseDragCallback)
+            onMouseDragCallback(event);
+        repaint();
+    }
+
+    void mouseUp(const juce::MouseEvent& event) override
+    {
+        if (onMouseUpCallback)
+            onMouseUpCallback(event);
+        repaint();
+    }
+};
+
 class MainComponent final : public juce::AudioAppComponent
 {
 public:
@@ -19,6 +62,10 @@ public:
     void resized() override;
     void paint(juce::Graphics& g) override;
     bool keyPressed(const juce::KeyPress& key) override;
+    void mouseMove(const juce::MouseEvent& event) override;
+    void mouseDown(const juce::MouseEvent& event) override;
+    void mouseDrag(const juce::MouseEvent& event) override;
+    void mouseUp(const juce::MouseEvent& event) override;
 
 private:
     void addModule(const juce::String& type, juce::Point<float> position);
@@ -35,6 +82,7 @@ private:
     void clearInspectorControls();
     void showNodeInspector(const NodeSnapshot& node);
     void showTrackInspector(const NodeSnapshot& track);
+    void autoWireTrackNode(const juce::Uuid& trackId, bool isMidiTrack);
     void toggleEditMode();
     void applyModeState();
 
@@ -51,6 +99,7 @@ private:
     juce::TextButton scanPluginsButton { "Scan Plugins" };
     juce::TextButton loadTrackClipButton { "Load Clip" };
     juce::ToggleButton trackMuteToggle { "Mute Track" };
+    InspectorResizeHandle inspectorResizeHandle;
     juce::Label hintLabel;
     juce::Label inspectorTitle;
 
@@ -65,4 +114,6 @@ private:
     std::optional<juce::Uuid> selectedNodeId;
     std::optional<juce::Uuid> selectedTrackId;
     bool editMode = false;
+    int inspectorPanelWidth = 300;
+    bool resizingInspector = false;
 };

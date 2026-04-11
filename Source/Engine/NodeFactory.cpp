@@ -5,7 +5,7 @@
 
 juce::StringArray NodeFactory::getAvailableTypes()
 {
-    return { "Oscillator", "LFO", "BpmToLfo", "TimeSignature", "Gain", "Add", "Subtract", "Multiply", "Divide", "Sum", "Plugin", "Output", "AudioTrack", "MidiTrack" };
+    return { "Oscillator", "LFO", "BpmToLfo", "TimeSignature", "AD", "ADSR", "Filter", "Gain", "Add", "Subtract", "Multiply", "Divide", "Sum", "Router", "Plugin", "Output", "AudioTrack", "MidiTrack" };
 }
 
 std::unique_ptr<ModuleNode> NodeFactory::create(const juce::String& type)
@@ -21,6 +21,15 @@ std::unique_ptr<ModuleNode> NodeFactory::create(const juce::String& type)
 
     if (type == "TimeSignature")
         return createTimeSignatureModule();
+
+    if (type == "AD")
+        return createAdEnvelopeModule();
+
+    if (type == "ADSR")
+        return createAdsrEnvelopeModule();
+
+    if (type == "Filter")
+        return createFilterModule();
 
     if (type == "Gain")
         return createGainModule();
@@ -39,6 +48,9 @@ std::unique_ptr<ModuleNode> NodeFactory::create(const juce::String& type)
 
     if (type == "Sum")
         return createSumModule();
+
+    if (type == "Router")
+        return createRouterModule();
 
     if (type == "Plugin")
         return createExternal();

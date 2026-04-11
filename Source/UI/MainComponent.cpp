@@ -4,7 +4,42 @@ namespace
 {
 constexpr int toolbarHeight = 48;
 constexpr int trackAreaHeight = 190;
-constexpr int inspectorWidth = 300;
+constexpr int minInspectorWidth = 240;
+constexpr int maxInspectorWidth = 520;
+constexpr int inspectorResizeHandleWidth = 10;
+
+std::optional<NodeSnapshot> findNodeOfType(const std::vector<NodeSnapshot>& nodes, const juce::String& typeId)
+{
+    for (const auto& node : nodes)
+        if (node.typeId == typeId)
+            return node;
+
+    return std::nullopt;
+}
+
+std::optional<int> findFirstFreeInputPort(const NodeSnapshot& node,
+                                          PortKind kind,
+                                          const std::vector<GraphConnection>& connections)
+{
+    const auto portCount = static_cast<int>(std::count_if(node.inputs.begin(), node.inputs.end(),
+                                                          [kind](const auto& port) { return port.kind == kind; }));
+
+    for (int portIndex = 0; portIndex < portCount; ++portIndex)
+    {
+        const auto alreadyUsed = std::any_of(connections.begin(), connections.end(),
+                                             [&node, kind, portIndex](const auto& connection)
+                                             {
+                                                 return connection.destination.nodeId == node.id
+                                                     && connection.destination.kind == kind
+                                                     && connection.destination.portIndex == portIndex;
+                                             });
+
+        if (! alreadyUsed)
+            return portIndex;
+    }
+
+    return std::nullopt;
+}
 }
 
 MainComponent::MainComponent() : canvas(graph), trackView(graph)
@@ -50,6 +85,7 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     addAndMakeVisible(hintLabel);
     addAndMakeVisible(trackView);
     addAndMakeVisible(canvas);
+    addAndMakeVisible(inspectorResizeHandle);
     addAndMakeVisible(inspectorTitle);
     addAndMakeVisible(loadTrackClipButton);
     addAndMakeVisible(trackMuteToggle);
@@ -59,6 +95,11 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     inspectorTitle.setText("Inspector", juce::dontSendNotification);
     inspectorTitle.setColour(juce::Label::textColourId, juce::Colours::white);
     inspectorTitle.setFont(juce::FontOptions(18.0f, juce::Font::bold));
+    inspectorResizeHandle.setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+    inspectorResizeHandle.onMouseMoveCallback = [this](const juce::MouseEvent& event) { mouseMove(event.getEventRelativeTo(this)); };
+    inspectorResizeHandle.onMouseDownCallback = [this](const juce::MouseEvent& event) { mouseDown(event.getEventRelativeTo(this)); };
+    inspectorResizeHandle.onMouseDragCallback = [this](const juce::MouseEvent& event) { mouseDrag(event.getEventRelativeTo(this)); };
+    inspectorResizeHandle.onMouseUpCallback = [this](const juce::MouseEvent& event) { mouseUp(event.getEventRelativeTo(this)); };
 
     canvas.setSelectionChangedCallback([this](std::optional<juce::Uuid> nodeId)
     {
@@ -142,10 +183,14 @@ void MainComponent::resized()
     addMidiTrackButton.setBounds(toolbar.removeFromLeft(90).reduced(4));
     scanPluginsButton.setBounds(toolbar.removeFromLeft(104).reduced(4));
 
-    auto inspector = bounds.removeFromRight(inspectorWidth);
+    auto inspector = bounds.removeFromRight(inspectorPanelWidth);
     hintLabel.setBounds(bounds.removeFromTop(28));
     trackView.setBounds(bounds.removeFromTop(trackAreaHeight));
     bounds.removeFromTop(8);
+    inspectorResizeHandle.setBounds(inspector.getX() - inspectorResizeHandleWidth / 2,
+                                    toolbarHeight + 32,
+                                    inspectorResizeHandleWidth,
+                                    getHeight() - toolbarHeight - 44);
     canvas.setBounds(bounds);
 
     inspectorTitle.setBounds(inspector.removeFromTop(30));
@@ -193,13 +238,14 @@ void MainComponent::paint(juce::Graphics& g)
     g.fillAll(juce::Colour(0xff10141c));
 
     auto bounds = getLocalBounds().toFloat().reduced(12.0f);
-    auto inspector = bounds.removeFromRight(static_cast<float>(inspectorWidth));
+    auto inspector = bounds.removeFromRight(static_cast<float>(inspectorPanelWidth));
     bounds.removeFromTop(static_cast<float>(toolbarHeight) + 6.0f);
     bounds.removeFromTop(28.0f);
 
     g.setColour(juce::Colour(0xff171d28));
     g.fillRoundedRectangle(inspector, 14.0f);
     g.fillRoundedRectangle(bounds.removeFromTop(static_cast<float>(trackAreaHeight)), 14.0f);
+
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -214,6 +260,40 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     return juce::AudioAppComponent::keyPressed(key);
 }
 
+void MainComponent::mouseMove(const juce::MouseEvent& event)
+{
+    const auto dividerX = getWidth() - inspectorPanelWidth - 12;
+    const auto isOverDivider = std::abs(event.x - dividerX) <= inspectorResizeHandleWidth
+        && event.y > toolbarHeight + 24;
+    setMouseCursor(isOverDivider || resizingInspector ? juce::MouseCursor::LeftRightResizeCursor
+                                                      : juce::MouseCursor::NormalCursor);
+}
+
+void MainComponent::mouseDown(const juce::MouseEvent& event)
+{
+    const auto dividerX = getWidth() - inspectorPanelWidth - 12;
+    resizingInspector = std::abs(event.x - dividerX) <= inspectorResizeHandleWidth
+        && event.y > toolbarHeight + 24;
+}
+
+void MainComponent::mouseDrag(const juce::MouseEvent& event)
+{
+    if (! resizingInspector)
+        return;
+
+    inspectorPanelWidth = juce::jlimit(minInspectorWidth,
+                                       juce::jmin(maxInspectorWidth, getWidth() - 360),
+                                       getWidth() - event.x - 12);
+    resized();
+    repaint();
+}
+
+void MainComponent::mouseUp(const juce::MouseEvent&)
+{
+    resizingInspector = false;
+    setMouseCursor(juce::MouseCursor::NormalCursor);
+}
+
 void MainComponent::addModule(const juce::String& type, juce::Point<float> position)
 {
     if (auto node = NodeFactory::create(type))
@@ -223,7 +303,12 @@ void MainComponent::addModule(const juce::String& type, juce::Point<float> posit
         selectedTrackId.reset();
         trackView.setSelectedTrack(std::nullopt);
         canvas.setSelectedNode(nodeId);
+        if (type == "AudioTrack")
+            autoWireTrackNode(nodeId, false);
+        else if (type == "MidiTrack")
+            autoWireTrackNode(nodeId, true);
         canvas.grabKeyboardFocus();
+        rebuildInspector();
     }
 }
 
@@ -239,12 +324,15 @@ void MainComponent::seedDefaultSession()
     const auto bpmToLfo = graph.addNode(NodeFactory::create("BpmToLfo"), { 60.0f, 70.0f });
     const auto timeSignature = graph.addNode(NodeFactory::create("TimeSignature"), { 330.0f, 70.0f });
     const auto lfo = graph.addNode(NodeFactory::create("LFO"), { 60.0f, 290.0f });
+    const auto adsr = graph.addNode(NodeFactory::create("ADSR"), { 330.0f, 290.0f });
+    const auto ad = graph.addNode(NodeFactory::create("AD"), { 330.0f, 500.0f });
     const auto oscillator = graph.addNode(NodeFactory::create("Oscillator"), { 60.0f, 520.0f });
     const auto audioTrack = graph.addNode(NodeFactory::create("AudioTrack"), { 620.0f, 60.0f });
     const auto midiTrack = graph.addNode(NodeFactory::create("MidiTrack"), { 620.0f, 330.0f });
     const auto sum = graph.addNode(NodeFactory::create("Sum"), { 970.0f, 250.0f });
-    const auto gain = graph.addNode(NodeFactory::create("Gain"), { 1240.0f, 250.0f });
-    const auto output = graph.addNode(NodeFactory::create("Output"), { 1500.0f, 250.0f });
+    const auto filter = graph.addNode(NodeFactory::create("Filter"), { 1240.0f, 190.0f });
+    const auto gain = graph.addNode(NodeFactory::create("Gain"), { 1510.0f, 250.0f });
+    const auto output = graph.addNode(NodeFactory::create("Output"), { 1770.0f, 250.0f });
 
     graph.setNodeParameter(bpmToLfo, "bpm", 60.0f);
     graph.setNodeParameter(bpmToLfo, "multiplier", 1.0f);
@@ -252,6 +340,12 @@ void MainComponent::seedDefaultSession()
     graph.setNodeParameter(timeSignature, "denominator", 4.0f);
     graph.setNodeParameter(lfo, "rate", 0.18f);
     graph.setNodeParameter(lfo, "depth", 1.0f);
+    graph.setNodeParameter(adsr, "attackMs", 28.0f);
+    graph.setNodeParameter(adsr, "decayMs", 260.0f);
+    graph.setNodeParameter(adsr, "sustain", 0.42f);
+    graph.setNodeParameter(adsr, "releaseMs", 480.0f);
+    graph.setNodeParameter(ad, "attackMs", 10.0f);
+    graph.setNodeParameter(ad, "decayMs", 520.0f);
     graph.setNodeParameter(oscillator, "frequency", 220.0f);
     graph.setNodeParameter(oscillator, "level", 0.14f);
     graph.setNodeParameter(midiTrack, "rootNote", 48.0f);
@@ -266,11 +360,17 @@ void MainComponent::seedDefaultSession()
     graph.setNodeParameter(audioTrack, "loopEnd", 0.68f);
     graph.setNodeParameter(sum, "channels", 3.0f);
     graph.setNodeParameter(sum, "trim", 0.72f);
+    graph.setNodeParameter(filter, "mode", 0.0f);
+    graph.setNodeParameter(filter, "cutoff", 1400.0f);
+    graph.setNodeParameter(filter, "resonance", 0.55f);
+    graph.setNodeParameter(filter, "drive", 1.15f);
     graph.setNodeParameter(gain, "gain", 0.86f);
 
     graph.connect({ bpmToLfo, false, 0, PortKind::modulation }, { timeSignature, true, 0, PortKind::modulation });
     graph.connect({ bpmToLfo, false, 0, PortKind::modulation }, { audioTrack, true, 0, PortKind::modulation });
     graph.connect({ timeSignature, false, 0, PortKind::modulation }, { midiTrack, true, 0, PortKind::modulation });
+    graph.connect({ timeSignature, false, 2, PortKind::modulation }, { adsr, true, 0, PortKind::modulation });
+    graph.connect({ midiTrack, false, 1, PortKind::modulation }, { ad, true, 0, PortKind::modulation });
     graph.connect({ lfo, false, 2, PortKind::modulation }, { audioTrack, true, 1, PortKind::modulation });
     graph.connect({ timeSignature, false, 2, PortKind::modulation }, { audioTrack, true, 2, PortKind::modulation });
     graph.connect({ lfo, false, 2, PortKind::modulation }, { midiTrack, true, 1, PortKind::modulation });
@@ -279,8 +379,11 @@ void MainComponent::seedDefaultSession()
     graph.connect({ audioTrack, false, 0, PortKind::audio }, { sum, true, 0, PortKind::audio });
     graph.connect({ midiTrack, false, 0, PortKind::audio }, { sum, true, 1, PortKind::audio });
     graph.connect({ oscillator, false, 0, PortKind::audio }, { sum, true, 2, PortKind::audio });
-    graph.connect({ sum, false, 0, PortKind::audio }, { gain, true, 0, PortKind::audio });
-    graph.connect({ lfo, false, 0, PortKind::modulation }, { gain, true, 1, PortKind::modulation });
+    graph.connect({ sum, false, 0, PortKind::audio }, { filter, true, 0, PortKind::audio });
+    graph.connect({ ad, false, 0, PortKind::modulation }, { filter, true, 0, PortKind::modulation });
+    graph.connect({ adsr, false, 0, PortKind::modulation }, { filter, true, 1, PortKind::modulation });
+    graph.connect({ filter, false, 0, PortKind::audio }, { gain, true, 0, PortKind::audio });
+    graph.connect({ adsr, false, 0, PortKind::modulation }, { gain, true, 1, PortKind::modulation });
     graph.connect({ gain, false, 0, PortKind::audio }, { output, true, 0, PortKind::audio });
     rebuildInspector();
 }
@@ -340,6 +443,7 @@ void MainComponent::loadSession()
 void MainComponent::addAudioTrack()
 {
     selectedTrackId = graph.addNode(NodeFactory::create("AudioTrack"), { 240.0f, 70.0f + static_cast<float>(graph.getNodes().size() * 18) });
+    autoWireTrackNode(*selectedTrackId, false);
     selectedNodeId.reset();
     canvas.clearSelection();
     trackView.setSelectedTrack(selectedTrackId);
@@ -349,6 +453,7 @@ void MainComponent::addAudioTrack()
 void MainComponent::addMidiTrack()
 {
     selectedTrackId = graph.addNode(NodeFactory::create("MidiTrack"), { 240.0f, 240.0f + static_cast<float>(graph.getNodes().size() * 18) });
+    autoWireTrackNode(*selectedTrackId, true);
     selectedNodeId.reset();
     canvas.clearSelection();
     trackView.setSelectedTrack(selectedTrackId);
@@ -516,8 +621,37 @@ void MainComponent::showNodeInspector(const NodeSnapshot& node)
         inspectorSliders.add(zoomSlider);
     }
 
+    auto addEnumBox = [this, &node](const juce::String& labelText,
+                                    const juce::StringArray& choices,
+                                    int selectedIndex,
+                                    const juce::String& parameterId)
+    {
+        auto* label = new juce::Label();
+        label->setText(labelText, juce::dontSendNotification);
+        label->setColour(juce::Label::textColourId, juce::Colour(0xffdbe3ec));
+        addAndMakeVisible(label);
+        inspectorLabels.add(label);
+
+        auto* combo = new juce::ComboBox();
+        for (int i = 0; i < choices.size(); ++i)
+            combo->addItem(choices[i], i + 1);
+        combo->setSelectedId(selectedIndex + 1, juce::dontSendNotification);
+        combo->onChange = [this, id = node.id, parameterId, combo]
+        {
+            graph.setNodeParameter(id, parameterId, static_cast<float>(combo->getSelectedId() - 1));
+        };
+        addAndMakeVisible(combo);
+        inspectorComboBoxes.add(combo);
+    };
+
     for (const auto& parameter : node.parameters)
     {
+        if (node.typeId == "Filter" && parameter.spec.id == "mode")
+        {
+            addEnumBox("Type", { "Low-pass", "High-pass", "Band-pass", "Notch" }, static_cast<int>(std::round(parameter.value)), "mode");
+            continue;
+        }
+
         auto* label = new juce::Label();
         label->setText(parameter.spec.name, juce::dontSendNotification);
         label->setColour(juce::Label::textColourId, juce::Colour(0xffdbe3ec));
@@ -525,7 +659,12 @@ void MainComponent::showNodeInspector(const NodeSnapshot& node)
         inspectorLabels.add(label);
 
         auto* slider = new juce::Slider();
-        const auto interval = (parameter.spec.id == "channels" || parameter.spec.id == "rootNote") ? 1.0 : 0.001;
+        const auto interval = (parameter.spec.id == "channels"
+                               || parameter.spec.id == "rootNote"
+                               || parameter.spec.id == "destinations"
+                               || parameter.spec.id == "activeRoute"
+                               || parameter.spec.id == "numerator"
+                               || parameter.spec.id == "denominator") ? 1.0 : 0.001;
         slider->setRange(parameter.spec.minValue, parameter.spec.maxValue, interval);
         slider->setValue(parameter.value, juce::dontSendNotification);
         slider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 70, 20);
@@ -537,6 +676,50 @@ void MainComponent::showNodeInspector(const NodeSnapshot& node)
         addAndMakeVisible(slider);
         inspectorSliders.add(slider);
     }
+}
+
+void MainComponent::autoWireTrackNode(const juce::Uuid& trackId, bool isMidiTrack)
+{
+    const auto nodes = graph.getNodes();
+    const auto connections = graph.getConnections();
+    const auto trackSnapshot = graph.getNode(trackId);
+
+    if (! trackSnapshot.has_value())
+        return;
+
+    if (const auto lfo = findNodeOfType(nodes, "LFO"))
+        graph.connect({ lfo->id, false, 2, PortKind::modulation }, { trackId, true, 1, PortKind::modulation });
+
+    if (const auto timeSignature = findNodeOfType(nodes, "TimeSignature"))
+    {
+        graph.connect({ timeSignature->id, false, 2, PortKind::modulation }, { trackId, true, 2, PortKind::modulation });
+        graph.connect({ timeSignature->id, false, isMidiTrack ? 0 : 1, PortKind::modulation }, { trackId, true, 0, PortKind::modulation });
+    }
+    else if (const auto bpmToLfo = findNodeOfType(nodes, "BpmToLfo"))
+    {
+        graph.connect({ bpmToLfo->id, false, 0, PortKind::modulation }, { trackId, true, 0, PortKind::modulation });
+    }
+
+    if (const auto sum = findNodeOfType(nodes, "Sum"))
+    {
+        if (const auto freeAudioPort = findFirstFreeInputPort(*sum, PortKind::audio, connections))
+        {
+            graph.connect({ trackId, false, 0, PortKind::audio }, { sum->id, true, *freeAudioPort, PortKind::audio });
+            return;
+        }
+    }
+
+    if (const auto filter = findNodeOfType(nodes, "Filter"))
+    {
+        if (const auto freeAudioPort = findFirstFreeInputPort(*filter, PortKind::audio, connections))
+        {
+            graph.connect({ trackId, false, 0, PortKind::audio }, { filter->id, true, *freeAudioPort, PortKind::audio });
+            return;
+        }
+    }
+
+    if (const auto output = findNodeOfType(nodes, "Output"))
+        graph.connect({ trackId, false, 0, PortKind::audio }, { output->id, true, 0, PortKind::audio });
 }
 
 void MainComponent::showTrackInspector(const NodeSnapshot& track)

@@ -22,9 +22,13 @@
   - LFO
   - BPM to LFO
   - Time Signature
+  - AD Envelope
+  - ADSR Envelope
+  - Filter
   - Gain
   - Add / Subtract / Multiply / Divide
   - Sum
+  - Router
   - Output
   - Audio Track
   - MIDI Track
@@ -37,6 +41,7 @@
   - zoom with `=` and `-`
   - pan with the arrow keys
   - double-click track nodes and plugin nodes to open their detached editors
+  - resize the inspector by dragging its left divider
 
 ## Build
 
@@ -57,15 +62,17 @@ On macOS, the build produces:
 
 ## Demo Patch
 
-The app now boots into a proper demo session:
+The app now boots into a fuller demo session:
 
 1. `BPM to LFO -> Time Signature`
-2. `Time Signature` drives the `MIDI Track` rate and loop motion
-3. `BPM to LFO` drives the `Audio Track` playback rate
-4. `LFO` modulates loop points and final gain
-5. `Audio Track`, `MIDI Track`, and `Oscillator` are summed through a `Sum` node, then passed through `Gain -> Output`
+2. `Time Signature` and `BPM to LFO` drive the track playback rates automatically
+3. `AD` and `ADSR` envelopes open the filter and shape gain
+4. `LFO` still modulates loop points
+5. `Audio Track`, `MIDI Track`, and `Oscillator` are summed, filtered, amplified, and sent to output
 
 The default patch is immediately audible from the oscillator and MIDI track. To bring the audio track in, select it and load a clip, then double-click the node to edit its waveform range and loop markers.
+
+Newly created audio and MIDI tracks are auto-wired into the existing timing and mix graph when suitable clocking and mix nodes already exist, so building out larger patches is faster.
 
 Useful controls:
 

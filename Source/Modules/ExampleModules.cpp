@@ -32,6 +32,11 @@ float midiToFrequency(int midiNote)
     return 440.0f * std::pow(2.0f, static_cast<float>(midiNote - 69) / 12.0f);
 }
 
+double msToSamples(double sampleRate, float milliseconds)
+{
+    return juce::jmax(1.0, sampleRate * static_cast<double>(juce::jmax(1.0f, milliseconds)) * 0.001);
+}
+
 class OscillatorModule final : public ModuleNode
 {
 public:
@@ -328,6 +333,361 @@ private:
     float numerator = 4.0f;
     float denominator = 4.0f;
     float barPhase = 0.0f;
+};
+
+class AdEnvelopeModule final : public ModuleNode
+{
+public:
+    juce::String getTypeId() const override { return "AD"; }
+    juce::String getDisplayName() const override { return "AD Envelope"; }
+    juce::Colour getNodeColour() const override { return juce::Colour(0xfffca311); }
+
+    std::vector<PortInfo> getInputPorts() const override
+    {
+        return {
+            { "triggerIn", PortKind::modulation }
+        };
+    }
+
+    std::vector<PortInfo> getOutputPorts() const override
+    {
+        return {
+            { "env", PortKind::modulation },
+            { "endTrig", PortKind::modulation }
+        };
+    }
+
+    std::vector<NodeParameterSpec> getParameterSpecs() const override
+    {
+        return {
+            { "attackMs", "Attack", 1.0f, 4000.0f, 80.0f },
+            { "decayMs", "Decay", 1.0f, 6000.0f, 280.0f },
+            { "amount", "Amount", 0.0f, 1.0f, 1.0f }
+        };
+    }
+
+    void prepare(double newSampleRate, int) override
+    {
+        sampleRate = newSampleRate;
+    }
+
+    void process(NodeRenderContext& context) override
+    {
+        const auto trigger = ! context.modInputs.empty() && context.modInputs[0] > 0.5f;
+        auto firedEnd = false;
+
+        if (trigger && ! lastTriggerHigh)
+        {
+            stage = Stage::attack;
+            value = 0.0f;
+        }
+
+        lastTriggerHigh = trigger;
+
+        for (int sample = 0; sample < context.numSamples; ++sample)
+        {
+            switch (stage)
+            {
+                case Stage::idle:
+                    value = 0.0f;
+                    break;
+                case Stage::attack:
+                    value += static_cast<float>(1.0 / msToSamples(sampleRate, attackMs));
+                    if (value >= 1.0f)
+                    {
+                        value = 1.0f;
+                        stage = Stage::decay;
+                    }
+                    break;
+                case Stage::decay:
+                    value -= static_cast<float>(1.0 / msToSamples(sampleRate, decayMs));
+                    if (value <= 0.0f)
+                    {
+                        value = 0.0f;
+                        stage = Stage::idle;
+                        firedEnd = true;
+                    }
+                    break;
+            }
+        }
+
+        if (! context.modOutputs.empty())
+            context.modOutputs[0] = value * amount;
+        if (context.modOutputs.size() > 1)
+            context.modOutputs[1] = firedEnd ? 1.0f : 0.0f;
+    }
+
+    float getParameterValue(const juce::String& parameterId) const override
+    {
+        if (parameterId == "attackMs") return attackMs;
+        if (parameterId == "decayMs") return decayMs;
+        if (parameterId == "amount") return amount;
+        return 0.0f;
+    }
+
+    void setParameterValue(const juce::String& parameterId, float newValue) override
+    {
+        if (parameterId == "attackMs") attackMs = juce::jlimit(1.0f, 4000.0f, newValue);
+        else if (parameterId == "decayMs") decayMs = juce::jlimit(1.0f, 6000.0f, newValue);
+        else if (parameterId == "amount") amount = juce::jlimit(0.0f, 1.0f, newValue);
+    }
+
+private:
+    enum class Stage { idle, attack, decay };
+
+    double sampleRate = 44100.0;
+    float attackMs = 80.0f;
+    float decayMs = 280.0f;
+    float amount = 1.0f;
+    float value = 0.0f;
+    bool lastTriggerHigh = false;
+    Stage stage = Stage::idle;
+};
+
+class AdsrEnvelopeModule final : public ModuleNode
+{
+public:
+    juce::String getTypeId() const override { return "ADSR"; }
+    juce::String getDisplayName() const override { return "ADSR Envelope"; }
+    juce::Colour getNodeColour() const override { return juce::Colour(0xffef476f); }
+
+    std::vector<PortInfo> getInputPorts() const override
+    {
+        return {
+            { "gateIn", PortKind::modulation }
+        };
+    }
+
+    std::vector<PortInfo> getOutputPorts() const override
+    {
+        return {
+            { "env", PortKind::modulation },
+            { "endTrig", PortKind::modulation }
+        };
+    }
+
+    std::vector<NodeParameterSpec> getParameterSpecs() const override
+    {
+        return {
+            { "attackMs", "Attack", 1.0f, 4000.0f, 40.0f },
+            { "decayMs", "Decay", 1.0f, 6000.0f, 220.0f },
+            { "sustain", "Sustain", 0.0f, 1.0f, 0.55f },
+            { "releaseMs", "Release", 1.0f, 8000.0f, 420.0f },
+            { "amount", "Amount", 0.0f, 1.0f, 1.0f }
+        };
+    }
+
+    void prepare(double newSampleRate, int) override
+    {
+        sampleRate = newSampleRate;
+    }
+
+    void process(NodeRenderContext& context) override
+    {
+        const auto gate = ! context.modInputs.empty() && context.modInputs[0] > 0.5f;
+        auto firedEnd = false;
+
+        if (gate && ! lastGateHigh)
+            stage = Stage::attack;
+        else if (! gate && lastGateHigh && stage != Stage::idle)
+            stage = Stage::release;
+
+        lastGateHigh = gate;
+
+        for (int sample = 0; sample < context.numSamples; ++sample)
+        {
+            switch (stage)
+            {
+                case Stage::idle:
+                    value = 0.0f;
+                    break;
+                case Stage::attack:
+                    value += static_cast<float>(1.0 / msToSamples(sampleRate, attackMs));
+                    if (value >= 1.0f)
+                    {
+                        value = 1.0f;
+                        stage = Stage::decay;
+                    }
+                    break;
+                case Stage::decay:
+                    value -= static_cast<float>((1.0f - sustain) / msToSamples(sampleRate, decayMs));
+                    if (value <= sustain)
+                    {
+                        value = sustain;
+                        stage = gate ? Stage::sustain : Stage::release;
+                    }
+                    break;
+                case Stage::sustain:
+                    value = sustain;
+                    if (! gate)
+                        stage = Stage::release;
+                    break;
+                case Stage::release:
+                    value -= static_cast<float>(juce::jmax(0.0001f, value) / msToSamples(sampleRate, releaseMs));
+                    if (value <= 0.0005f)
+                    {
+                        value = 0.0f;
+                        stage = Stage::idle;
+                        firedEnd = true;
+                    }
+                    break;
+            }
+        }
+
+        if (! context.modOutputs.empty())
+            context.modOutputs[0] = value * amount;
+        if (context.modOutputs.size() > 1)
+            context.modOutputs[1] = firedEnd ? 1.0f : 0.0f;
+    }
+
+    float getParameterValue(const juce::String& parameterId) const override
+    {
+        if (parameterId == "attackMs") return attackMs;
+        if (parameterId == "decayMs") return decayMs;
+        if (parameterId == "sustain") return sustain;
+        if (parameterId == "releaseMs") return releaseMs;
+        if (parameterId == "amount") return amount;
+        return 0.0f;
+    }
+
+    void setParameterValue(const juce::String& parameterId, float newValue) override
+    {
+        if (parameterId == "attackMs") attackMs = juce::jlimit(1.0f, 4000.0f, newValue);
+        else if (parameterId == "decayMs") decayMs = juce::jlimit(1.0f, 6000.0f, newValue);
+        else if (parameterId == "sustain") sustain = juce::jlimit(0.0f, 1.0f, newValue);
+        else if (parameterId == "releaseMs") releaseMs = juce::jlimit(1.0f, 8000.0f, newValue);
+        else if (parameterId == "amount") amount = juce::jlimit(0.0f, 1.0f, newValue);
+    }
+
+private:
+    enum class Stage { idle, attack, decay, sustain, release };
+
+    double sampleRate = 44100.0;
+    float attackMs = 40.0f;
+    float decayMs = 220.0f;
+    float sustain = 0.55f;
+    float releaseMs = 420.0f;
+    float amount = 1.0f;
+    float value = 0.0f;
+    bool lastGateHigh = false;
+    Stage stage = Stage::idle;
+};
+
+class FilterModule final : public ModuleNode
+{
+public:
+    juce::String getTypeId() const override { return "Filter"; }
+    juce::String getDisplayName() const override { return "Filter"; }
+    juce::Colour getNodeColour() const override { return juce::Colour(0xff70e000); }
+
+    std::vector<PortInfo> getInputPorts() const override
+    {
+        return {
+            { "audioIn", PortKind::audio },
+            { "cutoffCV", PortKind::modulation },
+            { "resonanceCV", PortKind::modulation }
+        };
+    }
+
+    std::vector<PortInfo> getOutputPorts() const override
+    {
+        return {
+            { "audioOut", PortKind::audio }
+        };
+    }
+
+    std::vector<NodeParameterSpec> getParameterSpecs() const override
+    {
+        return {
+            { "mode", "Type", 0.0f, 3.0f, 0.0f },
+            { "cutoff", "Cutoff", 40.0f, 18000.0f, 1200.0f },
+            { "resonance", "Resonance", 0.1f, 1.5f, 0.45f },
+            { "drive", "Drive", 0.5f, 3.0f, 1.0f }
+        };
+    }
+
+    void prepare(double newSampleRate, int) override
+    {
+        sampleRate = newSampleRate;
+
+        for (auto& filter : filters)
+            filter.reset();
+
+        updateCoefficients();
+    }
+
+    void process(NodeRenderContext& context) override
+    {
+        auto* input = context.audioInputs[0];
+        auto* output = context.audioOutputs[0];
+        output->makeCopyOf(*input);
+
+        const auto cutoffUnit = context.modInputs.size() > 0 ? modToUnitRange(context.modInputs[0]) : -1.0f;
+        const auto resonanceUnit = context.modInputs.size() > 1 ? modToUnitRange(context.modInputs[1]) : -1.0f;
+        const auto effectiveCutoff = cutoffUnit >= 0.0f ? juce::jmap(cutoffUnit, 40.0f, 18000.0f) : cutoff;
+        const auto effectiveResonance = resonanceUnit >= 0.0f ? juce::jmap(resonanceUnit, 0.1f, 1.5f) : resonance;
+
+        currentCutoff = juce::jlimit(40.0f, 18000.0f, effectiveCutoff);
+        currentResonance = juce::jlimit(0.1f, 1.5f, effectiveResonance);
+        updateCoefficients();
+
+        output->applyGain(drive);
+
+        for (int channel = 0; channel < juce::jmin(2, output->getNumChannels()); ++channel)
+        {
+            auto* channelData = output->getWritePointer(channel);
+
+            for (int sample = 0; sample < output->getNumSamples(); ++sample)
+                channelData[sample] = filters[static_cast<size_t>(channel)].processSingleSampleRaw(channelData[sample]);
+        }
+
+        output->applyGain(1.0f / juce::jmax(1.0f, drive));
+    }
+
+    float getParameterValue(const juce::String& parameterId) const override
+    {
+        if (parameterId == "mode") return static_cast<float>(mode);
+        if (parameterId == "cutoff") return cutoff;
+        if (parameterId == "resonance") return resonance;
+        if (parameterId == "drive") return drive;
+        return 0.0f;
+    }
+
+    void setParameterValue(const juce::String& parameterId, float newValue) override
+    {
+        if (parameterId == "mode") mode = juce::jlimit(0, 3, static_cast<int>(std::round(newValue)));
+        else if (parameterId == "cutoff") cutoff = juce::jlimit(40.0f, 18000.0f, newValue);
+        else if (parameterId == "resonance") resonance = juce::jlimit(0.1f, 1.5f, newValue);
+        else if (parameterId == "drive") drive = juce::jlimit(0.5f, 3.0f, newValue);
+
+        currentCutoff = cutoff;
+        currentResonance = resonance;
+        updateCoefficients();
+    }
+
+private:
+    void updateCoefficients()
+    {
+        for (auto& filter : filters)
+        {
+            switch (mode)
+            {
+                case 1: filter.setCoefficients(juce::IIRCoefficients::makeHighPass(sampleRate, currentCutoff, currentResonance)); break;
+                case 2: filter.setCoefficients(juce::IIRCoefficients::makeBandPass(sampleRate, currentCutoff, currentResonance)); break;
+                case 3: filter.setCoefficients(juce::IIRCoefficients::makeNotchFilter(sampleRate, currentCutoff, currentResonance)); break;
+                default: filter.setCoefficients(juce::IIRCoefficients::makeLowPass(sampleRate, currentCutoff, currentResonance)); break;
+            }
+        }
+    }
+
+    double sampleRate = 44100.0;
+    std::array<juce::IIRFilter, 2> filters;
+    int mode = 0;
+    float cutoff = 1200.0f;
+    float resonance = 0.45f;
+    float drive = 1.0f;
+    float currentCutoff = 1200.0f;
+    float currentResonance = 0.45f;
 };
 
 class GainModule final : public ModuleNode
@@ -631,6 +991,107 @@ private:
     float trim = 1.0f;
 };
 
+class RouterModule final : public ModuleNode
+{
+public:
+    juce::String getTypeId() const override { return "Router"; }
+    juce::String getDisplayName() const override { return "Router"; }
+    juce::Colour getNodeColour() const override { return juce::Colour(0xff84cc16); }
+
+    std::vector<PortInfo> getInputPorts() const override
+    {
+        return {
+            { "audioIn", PortKind::audio },
+            { "cvIn", PortKind::modulation },
+            { "triggerIn", PortKind::modulation }
+        };
+    }
+
+    std::vector<PortInfo> getOutputPorts() const override
+    {
+        std::vector<PortInfo> ports;
+        ports.reserve(static_cast<size_t>(destinationCount * 2));
+
+        for (int index = 0; index < destinationCount; ++index)
+        {
+            ports.push_back({ "audio" + juce::String(index + 1), PortKind::audio });
+            ports.push_back({ "cv" + juce::String(index + 1), PortKind::modulation });
+        }
+
+        return ports;
+    }
+
+    std::vector<NodeParameterSpec> getParameterSpecs() const override
+    {
+        return {
+            { "destinations", "Destinations", 2.0f, 8.0f, 2.0f },
+            { "activeRoute", "Active Route", 1.0f, 8.0f, 1.0f }
+        };
+    }
+
+    void process(NodeRenderContext& context) override
+    {
+        for (auto* output : context.audioOutputs)
+            output->clear();
+
+        std::fill(context.modOutputs.begin(), context.modOutputs.end(), 0.0f);
+
+        const auto triggerValue = context.modInputs.size() > 1 ? context.modInputs[1] : 0.0f;
+        const auto triggerHigh = triggerValue > 0.5f;
+
+        if (triggerHigh && ! lastTriggerHigh)
+            activeRoute = (activeRoute + 1) % juce::jmax(1, destinationCount);
+
+        lastTriggerHigh = triggerHigh;
+
+        const auto routeIndex = juce::jlimit(0, juce::jmax(0, destinationCount - 1), activeRoute);
+        const auto audioOutputIndex = routeIndex;
+        const auto modOutputIndex = routeIndex;
+
+        if (! context.audioInputs.empty()
+            && juce::isPositiveAndBelow(audioOutputIndex, static_cast<int>(context.audioOutputs.size()))
+            && context.audioInputs[0] != nullptr
+            && context.audioOutputs[static_cast<size_t>(audioOutputIndex)] != nullptr)
+        {
+            auto* source = context.audioInputs[0];
+            auto* destination = context.audioOutputs[static_cast<size_t>(audioOutputIndex)];
+
+            for (int channel = 0; channel < juce::jmin(source->getNumChannels(), destination->getNumChannels()); ++channel)
+                destination->addFrom(channel, 0, *source, channel, 0, context.numSamples);
+        }
+
+        if (! context.modInputs.empty()
+            && juce::isPositiveAndBelow(modOutputIndex, static_cast<int>(context.modOutputs.size())))
+        {
+            context.modOutputs[static_cast<size_t>(modOutputIndex)] = context.modInputs[0];
+        }
+    }
+
+    float getParameterValue(const juce::String& parameterId) const override
+    {
+        if (parameterId == "destinations")
+            return static_cast<float>(destinationCount);
+        if (parameterId == "activeRoute")
+            return static_cast<float>(activeRoute + 1);
+        return 0.0f;
+    }
+
+    void setParameterValue(const juce::String& parameterId, float newValue) override
+    {
+        if (parameterId == "destinations")
+            destinationCount = juce::jlimit(2, 8, static_cast<int>(std::round(newValue)));
+        else if (parameterId == "activeRoute")
+            activeRoute = juce::jlimit(0, juce::jmax(0, destinationCount - 1), static_cast<int>(std::round(newValue)) - 1);
+
+        activeRoute = juce::jlimit(0, juce::jmax(0, destinationCount - 1), activeRoute);
+    }
+
+private:
+    int destinationCount = 2;
+    int activeRoute = 0;
+    bool lastTriggerHigh = false;
+};
+
 class AudioTrackModule final : public ModuleNode
 {
 public:
@@ -653,7 +1114,13 @@ public:
             { "loopEndCV", PortKind::modulation }
         };
     }
-    std::vector<PortInfo> getOutputPorts() const override { return { { "audioOut", PortKind::audio } }; }
+    std::vector<PortInfo> getOutputPorts() const override
+    {
+        return {
+            { "audioOut", PortKind::audio },
+            { "endTrig", PortKind::modulation }
+        };
+    }
 
     std::vector<NodeParameterSpec> getParameterSpecs() const override
     {
@@ -672,6 +1139,8 @@ public:
     {
         auto* output = context.audioOutputs.front();
         output->clear();
+        if (! context.modOutputs.empty())
+            context.modOutputs[0] = 0.0f;
 
         if (! context.isPlaying || mute > 0.5f || audioClip.getNumSamples() == 0)
             return;
@@ -699,6 +1168,11 @@ public:
         const auto loopStartSample = static_cast<int>(std::floor(effectiveLoopStart * static_cast<float>(audioClip.getNumSamples() - 1)));
         const auto loopEndSample = juce::jlimit(loopStartSample + 1, audioClip.getNumSamples(), static_cast<int>(std::ceil(effectiveLoopEnd * static_cast<float>(audioClip.getNumSamples()))));
         const auto loopLength = juce::jmax(1, loopEndSample - loopStartSample);
+        const auto blockStartLoopPosition = (static_cast<double>(context.transportSamplePosition) * ratio) / static_cast<double>(loopLength);
+        const auto blockEndLoopPosition = (static_cast<double>(context.transportSamplePosition + juce::jmax(0, context.numSamples - 1)) * ratio) / static_cast<double>(loopLength);
+        const auto reachedEnd = std::floor(blockEndLoopPosition) > std::floor(blockStartLoopPosition);
+        if (! context.modOutputs.empty())
+            context.modOutputs[0] = reachedEnd ? 1.0f : 0.0f;
         const auto leftGain = volume * juce::jlimit(0.0f, 1.0f, 1.0f - juce::jmax(0.0f, pan));
         const auto rightGain = volume * juce::jlimit(0.0f, 1.0f, 1.0f + juce::jmin(0.0f, pan));
 
@@ -864,7 +1338,13 @@ public:
             { "loopEndCV", PortKind::modulation }
         };
     }
-    std::vector<PortInfo> getOutputPorts() const override { return { { "audioOut", PortKind::audio } }; }
+    std::vector<PortInfo> getOutputPorts() const override
+    {
+        return {
+            { "audioOut", PortKind::audio },
+            { "endTrig", PortKind::modulation }
+        };
+    }
 
     std::vector<NodeParameterSpec> getParameterSpecs() const override
     {
@@ -890,6 +1370,8 @@ public:
     {
         auto* output = context.audioOutputs.front();
         output->clear();
+        if (! context.modOutputs.empty())
+            context.modOutputs[0] = 0.0f;
 
         if (! context.isPlaying || mute > 0.5f)
             return;
@@ -917,6 +1399,11 @@ public:
         const auto loopStepCount = juce::jmax(1, loopEndIndex - loopStartIndex);
         const auto samplesPerStep = (samplesPerBeat / 4.0) / playbackRate;
         const auto loopLengthSamples = samplesPerStep * loopStepCount;
+        const auto blockStartLoopPosition = static_cast<double>(context.transportSamplePosition) / loopLengthSamples;
+        const auto blockEndLoopPosition = static_cast<double>(context.transportSamplePosition + juce::jmax(0, context.numSamples - 1)) / loopLengthSamples;
+        const auto reachedEnd = std::floor(blockEndLoopPosition) > std::floor(blockStartLoopPosition);
+        if (! context.modOutputs.empty())
+            context.modOutputs[0] = reachedEnd ? 1.0f : 0.0f;
         const auto leftGain = volume * juce::jlimit(0.0f, 1.0f, 1.0f - juce::jmax(0.0f, pan));
         const auto rightGain = volume * juce::jlimit(0.0f, 1.0f, 1.0f + juce::jmin(0.0f, pan));
         lastTransportSamplePosition = context.transportSamplePosition;
@@ -1552,6 +2039,21 @@ std::unique_ptr<ModuleNode> createTimeSignatureModule()
     return std::make_unique<TimeSignatureModule>();
 }
 
+std::unique_ptr<ModuleNode> createAdEnvelopeModule()
+{
+    return std::make_unique<AdEnvelopeModule>();
+}
+
+std::unique_ptr<ModuleNode> createAdsrEnvelopeModule()
+{
+    return std::make_unique<AdsrEnvelopeModule>();
+}
+
+std::unique_ptr<ModuleNode> createFilterModule()
+{
+    return std::make_unique<FilterModule>();
+}
+
 std::unique_ptr<ModuleNode> createGainModule()
 {
     return std::make_unique<GainModule>();
@@ -1585,6 +2087,11 @@ std::unique_ptr<ModuleNode> createOutputModule()
 std::unique_ptr<ModuleNode> createSumModule()
 {
     return std::make_unique<SumModule>();
+}
+
+std::unique_ptr<ModuleNode> createRouterModule()
+{
+    return std::make_unique<RouterModule>();
 }
 
 std::unique_ptr<ModuleNode> createAudioTrackModule()
