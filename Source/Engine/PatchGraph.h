@@ -31,6 +31,11 @@ struct NodeSnapshot
     bool isTrack = false;
     juce::String trackTypeId;
     juce::String resourcePath;
+    juce::Rectangle<int> embeddedEditorBounds;
+    bool supportsEditor = false;
+    bool editorOpen = false;
+    bool editorDetached = false;
+    float editorScale = 1.0f;
 };
 
 class PatchGraph final : public juce::ChangeBroadcaster
@@ -50,6 +55,11 @@ public:
     std::vector<GraphConnection> getConnections() const;
     bool setNodeParameter(const juce::Uuid& nodeId, const juce::String& parameterId, float value);
     bool loadNodeFile(const juce::Uuid& nodeId, const juce::File& file);
+    bool assignExternalPlugin(const juce::Uuid& nodeId, const juce::String& identifier);
+    juce::Component* getNodeEmbeddedEditor(const juce::Uuid& nodeId);
+    bool setNodeEditorOpen(const juce::Uuid& nodeId, bool isOpen);
+    bool setNodeEditorDetached(const juce::Uuid& nodeId, bool isDetached);
+    bool setNodeEditorScale(const juce::Uuid& nodeId, float scale);
 
     juce::ValueTree createState() const;
     void loadState(const juce::ValueTree& state);
@@ -79,6 +89,7 @@ private:
 
     RuntimeState& getOrCreateRuntimeState(const NodeEntry& node, int blockSize);
     const NodeEntry* findNode(const juce::Uuid& nodeId) const;
+    void pruneInvalidConnectionsForNode(const juce::Uuid& nodeId);
 
     std::vector<const NodeEntry*> buildRenderOrder() const;
 

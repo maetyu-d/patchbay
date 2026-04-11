@@ -70,6 +70,11 @@ void LfoCore::renderAsAudio(juce::AudioBuffer<float>& output, float rateHz, floa
     }
 }
 
+float LfoCore::getCurrentNormalisedValue() const
+{
+    return 0.5f + 0.5f * std::sin(phase);
+}
+
 void GainCore::process(juce::AudioBuffer<float>& buffer, float gain) const
 {
     buffer.applyGain(juce::jlimit(0.0f, 2.0f, gain));
@@ -79,4 +84,3 @@ void OutputCore::process(juce::AudioBuffer<float>& buffer, float gain) const
 {
     buffer.applyGain(juce::jlimit(0.0f, 1.0f, gain));
 }
-

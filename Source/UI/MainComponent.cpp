@@ -9,16 +9,6 @@ constexpr int inspectorWidth = 300;
 
 MainComponent::MainComponent() : canvas(graph), trackView(graph)
 {
-    for (const auto& type : NodeFactory::getAvailableTypes())
-    {
-        auto* button = new juce::TextButton(type);
-        button->onClick = [this, type] { addModule(type); };
-        button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff243041));
-        button->setColour(juce::TextButton::textColourOffId, juce::Colours::white);
-        moduleButtons.add(button);
-        addAndMakeVisible(button);
-    }
-
     auto styleButton = [](juce::Button& button, juce::Colour colour)
     {
         button.setColour(juce::TextButton::buttonColourId, colour);
@@ -31,14 +21,18 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     styleButton(rewindButton, juce::Colour(0xff60483b));
     styleButton(addAudioTrackButton, juce::Colour(0xff35576d));
     styleButton(addMidiTrackButton, juce::Colour(0xff5b4d74));
+    styleButton(scanPluginsButton, juce::Colour(0xff41644a));
     styleButton(loadTrackClipButton, juce::Colour(0xff35576d));
+
+    externalPluginManager.initialise();
 
     saveButton.onClick = [this] { saveSession(); };
     loadButton.onClick = [this] { loadSession(); };
-    transportButton.onClick = [this] { toggleTransport(); };
+    transportButton.onClick = [this] { toggleEditMode(); };
     rewindButton.onClick = [this] { rewindTransport(); };
     addAudioTrackButton.onClick = [this] { addAudioTrack(); };
     addMidiTrackButton.onClick = [this] { addMidiTrack(); };
+    scanPluginsButton.onClick = [this] { scanExternalPlugins(); };
     loadTrackClipButton.onClick = [this] { loadAudioIntoSelectedTrack(); };
     trackMuteToggle.onClick = [this]
     {
@@ -52,6 +46,7 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     addAndMakeVisible(rewindButton);
     addAndMakeVisible(addAudioTrackButton);
     addAndMakeVisible(addMidiTrackButton);
+    addAndMakeVisible(scanPluginsButton);
     addAndMakeVisible(hintLabel);
     addAndMakeVisible(trackView);
     addAndMakeVisible(canvas);
@@ -59,7 +54,7 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     addAndMakeVisible(loadTrackClipButton);
     addAndMakeVisible(trackMuteToggle);
 
-    hintLabel.setText("Standalone patching plus Logic-style audio and MIDI tracks. Select a node or track to edit it on the right.", juce::dontSendNotification);
+    hintLabel.setText("Right-click to add nodes, drag sockets to patch, double-click tracks/plugins to open editors, and press Cmd+E to switch Edit and Performance.", juce::dontSendNotification);
     hintLabel.setColour(juce::Label::textColourId, juce::Colour(0xff9fadb9));
     inspectorTitle.setText("Inspector", juce::dontSendNotification);
     inspectorTitle.setColour(juce::Label::textColourId, juce::Colours::white);
@@ -76,6 +71,16 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
         rebuildInspector();
     });
 
+    canvas.setCreateNodeCallback([this](const juce::String& type, juce::Point<float> position)
+    {
+        addModule(type, position);
+    });
+
+    canvas.setToggleEditModeCallback([this]
+    {
+        toggleEditMode();
+    });
+
     trackView.setSelectionChangedCallback([this](std::optional<juce::Uuid> trackId)
     {
         selectedTrackId = std::move(trackId);
@@ -90,9 +95,11 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
 
     setAudioChannels(0, 2);
     setOpaque(true);
+    setWantsKeyboardFocus(true);
     setSize(1500, 940);
 
     seedDefaultSession();
+    applyModeState();
 }
 
 MainComponent::~MainComponent()
@@ -127,15 +134,13 @@ void MainComponent::resized()
     auto bounds = getLocalBounds().reduced(12);
     auto toolbar = bounds.removeFromTop(toolbarHeight);
 
-    for (auto* button : moduleButtons)
-        button->setBounds(toolbar.removeFromLeft(100).reduced(4));
-
     saveButton.setBounds(toolbar.removeFromLeft(80).reduced(4));
     loadButton.setBounds(toolbar.removeFromLeft(80).reduced(4));
     transportButton.setBounds(toolbar.removeFromLeft(80).reduced(4));
     rewindButton.setBounds(toolbar.removeFromLeft(88).reduced(4));
     addAudioTrackButton.setBounds(toolbar.removeFromLeft(96).reduced(4));
     addMidiTrackButton.setBounds(toolbar.removeFromLeft(90).reduced(4));
+    scanPluginsButton.setBounds(toolbar.removeFromLeft(104).reduced(4));
 
     auto inspector = bounds.removeFromRight(inspectorWidth);
     hintLabel.setBounds(bounds.removeFromTop(28));
@@ -144,8 +149,21 @@ void MainComponent::resized()
     canvas.setBounds(bounds);
 
     inspectorTitle.setBounds(inspector.removeFromTop(30));
-    loadTrackClipButton.setBounds(inspector.removeFromTop(34).reduced(4));
-    trackMuteToggle.setBounds(inspector.removeFromTop(28).reduced(6, 2));
+    if (loadTrackClipButton.isVisible())
+        loadTrackClipButton.setBounds(inspector.removeFromTop(34).reduced(4));
+    else
+        loadTrackClipButton.setBounds({});
+
+    if (trackMuteToggle.isVisible())
+        trackMuteToggle.setBounds(inspector.removeFromTop(28).reduced(6, 2));
+    else
+        trackMuteToggle.setBounds({});
+
+    for (auto* combo : inspectorComboBoxes)
+        combo->setBounds(inspector.removeFromTop(30).reduced(6, 2));
+
+    for (auto* toggle : inspectorToggleButtons)
+        toggle->setBounds(inspector.removeFromTop(30).reduced(6, 2));
 
     for (int index = 0; index < inspectorLabels.size(); ++index)
     {
@@ -184,29 +202,85 @@ void MainComponent::paint(juce::Graphics& g)
     g.fillRoundedRectangle(bounds.removeFromTop(static_cast<float>(trackAreaHeight)), 14.0f);
 }
 
-void MainComponent::addModule(const juce::String& type)
+bool MainComponent::keyPressed(const juce::KeyPress& key)
+{
+    if (key == juce::KeyPress('e', juce::ModifierKeys::commandModifier, 0)
+        || key == juce::KeyPress('E', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
+    {
+        toggleEditMode();
+        return true;
+    }
+
+    return juce::AudioAppComponent::keyPressed(key);
+}
+
+void MainComponent::addModule(const juce::String& type, juce::Point<float> position)
 {
     if (auto node = NodeFactory::create(type))
     {
-        const auto offset = static_cast<float>(graph.getNodes().size()) * 28.0f;
-        graph.addNode(std::move(node), { 60.0f + offset, 120.0f + offset });
+        const auto nodeId = graph.addNode(std::move(node), position);
+        selectedNodeId = nodeId;
+        selectedTrackId.reset();
+        trackView.setSelectedTrack(std::nullopt);
+        canvas.setSelectedNode(nodeId);
         canvas.grabKeyboardFocus();
     }
 }
 
+void MainComponent::scanExternalPlugins()
+{
+    juce::String report;
+    externalPluginManager.scanForPlugins(report);
+    hintLabel.setText("Plugin scan complete. " + report.replaceCharacters("\n", " "), juce::dontSendNotification);
+}
+
 void MainComponent::seedDefaultSession()
 {
-    const auto oscillator = graph.addNode(NodeFactory::create("Oscillator"), { 70.0f, 120.0f });
-    const auto lfo = graph.addNode(NodeFactory::create("LFO"), { 70.0f, 310.0f });
-    const auto audioTrack = graph.addNode(NodeFactory::create("AudioTrack"), { 300.0f, 60.0f });
-    const auto midiTrack = graph.addNode(NodeFactory::create("MidiTrack"), { 300.0f, 330.0f });
-    const auto gain = graph.addNode(NodeFactory::create("Gain"), { 620.0f, 180.0f });
-    const auto output = graph.addNode(NodeFactory::create("Output"), { 900.0f, 180.0f });
+    const auto bpmToLfo = graph.addNode(NodeFactory::create("BpmToLfo"), { 60.0f, 70.0f });
+    const auto timeSignature = graph.addNode(NodeFactory::create("TimeSignature"), { 330.0f, 70.0f });
+    const auto lfo = graph.addNode(NodeFactory::create("LFO"), { 60.0f, 290.0f });
+    const auto oscillator = graph.addNode(NodeFactory::create("Oscillator"), { 60.0f, 520.0f });
+    const auto audioTrack = graph.addNode(NodeFactory::create("AudioTrack"), { 620.0f, 60.0f });
+    const auto midiTrack = graph.addNode(NodeFactory::create("MidiTrack"), { 620.0f, 330.0f });
+    const auto sum = graph.addNode(NodeFactory::create("Sum"), { 970.0f, 250.0f });
+    const auto gain = graph.addNode(NodeFactory::create("Gain"), { 1240.0f, 250.0f });
+    const auto output = graph.addNode(NodeFactory::create("Output"), { 1500.0f, 250.0f });
 
-    graph.connect({ oscillator, false, 0, PortKind::audio }, { gain, true, 0, PortKind::audio });
-    graph.connect({ lfo, false, 0, PortKind::modulation }, { gain, true, 0, PortKind::modulation });
-    graph.connect({ audioTrack, false, 0, PortKind::audio }, { gain, true, 0, PortKind::audio });
-    graph.connect({ midiTrack, false, 0, PortKind::audio }, { gain, true, 0, PortKind::audio });
+    graph.setNodeParameter(bpmToLfo, "bpm", 60.0f);
+    graph.setNodeParameter(bpmToLfo, "multiplier", 1.0f);
+    graph.setNodeParameter(timeSignature, "numerator", 5.0f);
+    graph.setNodeParameter(timeSignature, "denominator", 4.0f);
+    graph.setNodeParameter(lfo, "rate", 0.18f);
+    graph.setNodeParameter(lfo, "depth", 1.0f);
+    graph.setNodeParameter(oscillator, "frequency", 220.0f);
+    graph.setNodeParameter(oscillator, "level", 0.14f);
+    graph.setNodeParameter(midiTrack, "rootNote", 48.0f);
+    graph.setNodeParameter(midiTrack, "gain", 0.22f);
+    graph.setNodeParameter(midiTrack, "startPoint", 0.0f);
+    graph.setNodeParameter(midiTrack, "endPoint", 0.75f);
+    graph.setNodeParameter(midiTrack, "loopStart", 0.125f);
+    graph.setNodeParameter(midiTrack, "loopEnd", 0.625f);
+    graph.setNodeParameter(audioTrack, "startPoint", 0.1f);
+    graph.setNodeParameter(audioTrack, "endPoint", 0.92f);
+    graph.setNodeParameter(audioTrack, "loopStart", 0.2f);
+    graph.setNodeParameter(audioTrack, "loopEnd", 0.68f);
+    graph.setNodeParameter(sum, "channels", 3.0f);
+    graph.setNodeParameter(sum, "trim", 0.72f);
+    graph.setNodeParameter(gain, "gain", 0.86f);
+
+    graph.connect({ bpmToLfo, false, 0, PortKind::modulation }, { timeSignature, true, 0, PortKind::modulation });
+    graph.connect({ bpmToLfo, false, 0, PortKind::modulation }, { audioTrack, true, 0, PortKind::modulation });
+    graph.connect({ timeSignature, false, 0, PortKind::modulation }, { midiTrack, true, 0, PortKind::modulation });
+    graph.connect({ lfo, false, 2, PortKind::modulation }, { audioTrack, true, 1, PortKind::modulation });
+    graph.connect({ timeSignature, false, 2, PortKind::modulation }, { audioTrack, true, 2, PortKind::modulation });
+    graph.connect({ lfo, false, 2, PortKind::modulation }, { midiTrack, true, 1, PortKind::modulation });
+    graph.connect({ timeSignature, false, 2, PortKind::modulation }, { midiTrack, true, 2, PortKind::modulation });
+
+    graph.connect({ audioTrack, false, 0, PortKind::audio }, { sum, true, 0, PortKind::audio });
+    graph.connect({ midiTrack, false, 0, PortKind::audio }, { sum, true, 1, PortKind::audio });
+    graph.connect({ oscillator, false, 0, PortKind::audio }, { sum, true, 2, PortKind::audio });
+    graph.connect({ sum, false, 0, PortKind::audio }, { gain, true, 0, PortKind::audio });
+    graph.connect({ lfo, false, 0, PortKind::modulation }, { gain, true, 1, PortKind::modulation });
     graph.connect({ gain, false, 0, PortKind::audio }, { output, true, 0, PortKind::audio });
     rebuildInspector();
 }
@@ -349,13 +423,98 @@ void MainComponent::rebuildInspector()
 void MainComponent::clearInspectorControls()
 {
     inspectorLabels.clear();
+    inspectorComboBoxes.clear();
     inspectorSliders.clear();
+    inspectorToggleButtons.clear();
     inspectorStepButtons.clear();
 }
 
 void MainComponent::showNodeInspector(const NodeSnapshot& node)
 {
     inspectorTitle.setText("Node: " + node.name, juce::dontSendNotification);
+
+    if (node.typeId == "ExternalPlugin")
+    {
+        auto* pluginBox = new juce::ComboBox();
+        pluginBox->addItem("Unassigned", 1);
+
+        auto selectedItemId = 1;
+        auto itemId = 2;
+
+        for (const auto& displayName : externalPluginManager.getKnownPluginDisplayNames())
+        {
+            pluginBox->addItem(displayName, itemId);
+
+            if (const auto description = externalPluginManager.getPluginByDisplayName(displayName))
+                if (description->createIdentifierString() == node.resourcePath)
+                    selectedItemId = itemId;
+
+            ++itemId;
+        }
+
+        pluginBox->setTextWhenNothingSelected("Select hosted plugin");
+        pluginBox->setSelectedId(selectedItemId, juce::dontSendNotification);
+        pluginBox->onChange = [this, id = node.id, pluginBox]
+        {
+            if (pluginBox->getSelectedId() <= 1)
+                graph.assignExternalPlugin(id, {});
+            else if (const auto description = externalPluginManager.getPluginByDisplayName(pluginBox->getText()))
+                graph.assignExternalPlugin(id, description->createIdentifierString());
+
+            rebuildInspector();
+        };
+        addAndMakeVisible(pluginBox);
+        inspectorComboBoxes.add(pluginBox);
+
+        if (node.supportsEditor)
+        {
+            auto* helpLabel = new juce::Label();
+            helpLabel->setText("Double-click the node to open the plugin window.", juce::dontSendNotification);
+            helpLabel->setColour(juce::Label::textColourId, juce::Colour(0xff9fadb9));
+            helpLabel->setJustificationType(juce::Justification::centredLeft);
+            addAndMakeVisible(helpLabel);
+            inspectorLabels.add(helpLabel);
+
+            auto* zoomLabel = new juce::Label();
+            zoomLabel->setText("Window Zoom", juce::dontSendNotification);
+            zoomLabel->setColour(juce::Label::textColourId, juce::Colour(0xffdbe3ec));
+            addAndMakeVisible(zoomLabel);
+            inspectorLabels.add(zoomLabel);
+
+            auto* zoomSlider = new juce::Slider();
+            zoomSlider->setRange(0.5, 2.0, 0.01);
+            zoomSlider->setSkewFactorFromMidPoint(1.0);
+            zoomSlider->setValue(node.editorScale, juce::dontSendNotification);
+            zoomSlider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 70, 20);
+            zoomSlider->onValueChange = [this, id = node.id, zoomSlider]
+            {
+                graph.setNodeEditorScale(id, static_cast<float>(zoomSlider->getValue()));
+            };
+            addAndMakeVisible(zoomSlider);
+            inspectorSliders.add(zoomSlider);
+        }
+    }
+
+    if (node.typeId != "ExternalPlugin" && node.supportsEditor)
+    {
+        auto* zoomLabel = new juce::Label();
+        zoomLabel->setText("Editor Zoom", juce::dontSendNotification);
+        zoomLabel->setColour(juce::Label::textColourId, juce::Colour(0xffdbe3ec));
+        addAndMakeVisible(zoomLabel);
+        inspectorLabels.add(zoomLabel);
+
+        auto* zoomSlider = new juce::Slider();
+        zoomSlider->setRange(0.5, 2.0, 0.01);
+        zoomSlider->setSkewFactorFromMidPoint(1.0);
+        zoomSlider->setValue(node.editorScale, juce::dontSendNotification);
+        zoomSlider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 70, 20);
+        zoomSlider->onValueChange = [this, id = node.id, zoomSlider]
+        {
+            graph.setNodeEditorScale(id, static_cast<float>(zoomSlider->getValue()));
+        };
+        addAndMakeVisible(zoomSlider);
+        inspectorSliders.add(zoomSlider);
+    }
 
     for (const auto& parameter : node.parameters)
     {
@@ -366,7 +525,8 @@ void MainComponent::showNodeInspector(const NodeSnapshot& node)
         inspectorLabels.add(label);
 
         auto* slider = new juce::Slider();
-        slider->setRange(parameter.spec.minValue, parameter.spec.maxValue, 0.001);
+        const auto interval = (parameter.spec.id == "channels" || parameter.spec.id == "rootNote") ? 1.0 : 0.001;
+        slider->setRange(parameter.spec.minValue, parameter.spec.maxValue, interval);
         slider->setValue(parameter.value, juce::dontSendNotification);
         slider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 70, 20);
         slider->onValueChange = [this, id = node.id, parameterId = parameter.spec.id, slider]
@@ -444,4 +604,21 @@ void MainComponent::showTrackInspector(const NodeSnapshot& track)
             inspectorStepButtons.add(button);
         }
     }
+}
+
+void MainComponent::toggleEditMode()
+{
+    editMode = ! editMode;
+    applyModeState();
+}
+
+void MainComponent::applyModeState()
+{
+    graph.setPlaying(! editMode);
+    canvas.setEditMode(editMode);
+    transportButton.setButtonText(editMode ? "Edit Mode" : "Performance");
+    hintLabel.setText(editMode
+                          ? "Edit mode: patching is enabled and audio is stopped. Press Cmd+E to switch to performance mode."
+                          : "Performance mode: audio is running and patch editing is locked. Press Cmd+E to switch to edit mode.",
+                      juce::dontSendNotification);
 }

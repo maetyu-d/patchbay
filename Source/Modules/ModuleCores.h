@@ -20,6 +20,7 @@ public:
     void prepare(double newSampleRate);
     float advanceBlock(int numSamples, float rateHz, float depth);
     void renderAsAudio(juce::AudioBuffer<float>& output, float rateHz, float depth);
+    float getCurrentNormalisedValue() const;
 
 private:
     double sampleRate = 44100.0;

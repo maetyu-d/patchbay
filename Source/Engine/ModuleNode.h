@@ -104,6 +104,51 @@ public:
         return false;
     }
 
+    virtual juce::Component* getEmbeddedEditor()
+    {
+        return nullptr;
+    }
+
+    virtual juce::Rectangle<int> getEmbeddedEditorBoundsHint() const
+    {
+        return {};
+    }
+
+    virtual bool supportsEmbeddedEditor() const
+    {
+        return false;
+    }
+
+    virtual bool isEditorOpen() const
+    {
+        return false;
+    }
+
+    virtual void setEditorOpen(bool shouldBeOpen)
+    {
+        juce::ignoreUnused(shouldBeOpen);
+    }
+
+    virtual bool isEditorDetached() const
+    {
+        return false;
+    }
+
+    virtual void setEditorDetached(bool shouldBeDetached)
+    {
+        juce::ignoreUnused(shouldBeDetached);
+    }
+
+    virtual float getEditorScale() const
+    {
+        return 1.0f;
+    }
+
+    virtual void setEditorScale(float scale)
+    {
+        juce::ignoreUnused(scale);
+    }
+
     virtual juce::ValueTree saveState() const
     {
         juce::ValueTree state("PARAMETERS");

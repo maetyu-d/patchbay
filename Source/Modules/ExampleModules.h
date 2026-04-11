@@ -5,6 +5,13 @@
 std::unique_ptr<ModuleNode> createOscillatorModule();
 std::unique_ptr<ModuleNode> createLfoModule();
 std::unique_ptr<ModuleNode> createGainModule();
+std::unique_ptr<ModuleNode> createAddModule();
+std::unique_ptr<ModuleNode> createSubtractModule();
+std::unique_ptr<ModuleNode> createMultiplyModule();
+std::unique_ptr<ModuleNode> createDivideModule();
+std::unique_ptr<ModuleNode> createBpmToLfoModule();
+std::unique_ptr<ModuleNode> createTimeSignatureModule();
 std::unique_ptr<ModuleNode> createOutputModule();
+std::unique_ptr<ModuleNode> createSumModule();
 std::unique_ptr<ModuleNode> createAudioTrackModule();
 std::unique_ptr<ModuleNode> createMidiTrackModule();

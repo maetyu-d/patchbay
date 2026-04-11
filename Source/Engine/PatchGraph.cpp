@@ -1,5 +1,6 @@
 #include "PatchGraph.h"
 #include "NodeFactory.h"
+#include "../Modules/ExternalPluginModule.h"
 #include <queue>
 
 namespace
@@ -144,7 +145,12 @@ std::vector<NodeSnapshot> PatchGraph::getNodes() const
             }(),
             entry->node->isTrackModule(),
             entry->node->getTrackTypeId(),
-            entry->node->getResourcePath()
+            entry->node->getResourcePath(),
+            entry->node->getEmbeddedEditorBoundsHint(),
+            entry->node->supportsEmbeddedEditor(),
+            entry->node->isEditorOpen(),
+            entry->node->isEditorDetached(),
+            entry->node->getEditorScale()
         });
     }
 
@@ -179,9 +185,34 @@ bool PatchGraph::setNodeParameter(const juce::Uuid& nodeId, const juce::String& 
         if (entry->id == nodeId)
         {
             entry->node->setParameterValue(parameterId, value);
+            pruneInvalidConnectionsForNode(nodeId);
             sendChangeMessage();
             return true;
         }
+    }
+
+    return false;
+}
+
+bool PatchGraph::assignExternalPlugin(const juce::Uuid& nodeId, const juce::String& identifier)
+{
+    const juce::ScopedLock lock(graphLock);
+
+    for (auto* entry : nodes)
+    {
+        if (entry->id != nodeId)
+            continue;
+
+        if (auto* externalNode = dynamic_cast<ExternalPluginModule*>(entry->node.get()))
+        {
+            externalNode->setPluginIdentifier(identifier);
+            externalNode->prepare(currentSampleRate, currentBlockSize);
+            pruneInvalidConnectionsForNode(nodeId);
+            sendChangeMessage();
+            return true;
+        }
+
+        return false;
     }
 
     return false;
@@ -199,6 +230,70 @@ bool PatchGraph::loadNodeFile(const juce::Uuid& nodeId, const juce::File& file)
             if (loaded)
                 sendChangeMessage();
             return loaded;
+        }
+    }
+
+    return false;
+}
+
+juce::Component* PatchGraph::getNodeEmbeddedEditor(const juce::Uuid& nodeId)
+{
+    const juce::ScopedLock lock(graphLock);
+
+    for (auto* entry : nodes)
+    {
+        if (entry->id == nodeId)
+            return entry->node->getEmbeddedEditor();
+    }
+
+    return nullptr;
+}
+
+bool PatchGraph::setNodeEditorOpen(const juce::Uuid& nodeId, bool isOpen)
+{
+    const juce::ScopedLock lock(graphLock);
+
+    for (auto* entry : nodes)
+    {
+        if (entry->id == nodeId)
+        {
+            entry->node->setEditorOpen(isOpen);
+            sendChangeMessage();
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool PatchGraph::setNodeEditorDetached(const juce::Uuid& nodeId, bool isDetached)
+{
+    const juce::ScopedLock lock(graphLock);
+
+    for (auto* entry : nodes)
+    {
+        if (entry->id == nodeId)
+        {
+            entry->node->setEditorDetached(isDetached);
+            sendChangeMessage();
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool PatchGraph::setNodeEditorScale(const juce::Uuid& nodeId, float scale)
+{
+    const juce::ScopedLock lock(graphLock);
+
+    for (auto* entry : nodes)
+    {
+        if (entry->id == nodeId)
+        {
+            entry->node->setEditorScale(scale);
+            sendChangeMessage();
+            return true;
         }
     }
 
@@ -423,6 +518,35 @@ const PatchGraph::NodeEntry* PatchGraph::findNode(const juce::Uuid& nodeId) cons
     }
 
     return nullptr;
+}
+
+void PatchGraph::pruneInvalidConnectionsForNode(const juce::Uuid& nodeId)
+{
+    const auto* entry = findNode(nodeId);
+    if (entry == nullptr)
+        return;
+
+    const auto inputPorts = entry->node->getInputPorts();
+    const auto outputPorts = entry->node->getOutputPorts();
+
+    connections.erase(std::remove_if(connections.begin(), connections.end(),
+                                     [&nodeId, &inputPorts, &outputPorts](const auto& connection)
+                                     {
+                                         if (connection.destination.nodeId == nodeId)
+                                         {
+                                             return ! juce::isPositiveAndBelow(connection.destination.portIndex, static_cast<int>(inputPorts.size()))
+                                                 || inputPorts[static_cast<size_t>(connection.destination.portIndex)].kind != connection.destination.kind;
+                                         }
+
+                                         if (connection.source.nodeId == nodeId)
+                                         {
+                                             return ! juce::isPositiveAndBelow(connection.source.portIndex, static_cast<int>(outputPorts.size()))
+                                                 || outputPorts[static_cast<size_t>(connection.source.portIndex)].kind != connection.source.kind;
+                                         }
+
+                                         return false;
+                                     }),
+                      connections.end());
 }
 
 std::vector<const PatchGraph::NodeEntry*> PatchGraph::buildRenderOrder() const

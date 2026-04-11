@@ -1,10 +1,11 @@
 # PatchBay DAW
 
-`PatchBay DAW` is a JUCE/C++ modular DAW prototype with a patch-cable canvas, a standalone host app, and separate plugin targets for each built-in module.
+`PatchBay DAW` is a JUCE/C++ modular DAW prototype with a patch-cable canvas, a standalone host app, detachable editors, track modules, and separate plugin targets for the built-in modules.
 
 ## What is implemented
 
 - A JUCE desktop app with an audio callback and live output.
+- Edit and Performance modes, toggled with `Cmd+E`.
 - Separate plugin targets for:
   - Oscillator
   - LFO
@@ -19,13 +20,23 @@
 - Example modules:
   - Oscillator
   - LFO
+  - BPM to LFO
+  - Time Signature
   - Gain
+  - Add / Subtract / Multiply / Divide
+  - Sum
   - Output
+  - Audio Track
+  - MIDI Track
+  - External Plugin host node for AU and VST3
 - A visual canvas where you can:
-  - add modules
+  - right-click anywhere to add modules
   - drag nodes
   - click one socket, then another compatible socket, to create a cable
-  - select a node and press `Delete` or `Backspace` to remove it
+  - select a cable or node and press `Delete` or `Backspace` to remove it
+  - zoom with `=` and `-`
+  - pan with the arrow keys
+  - double-click track nodes and plugin nodes to open their detached editors
 
 ## Build
 
@@ -44,17 +55,25 @@ On macOS, the build produces:
 - `PatchBay Gain` as `VST3`, `AU`, and standalone
 - `PatchBay Output` as `VST3`, `AU`, and standalone
 
-## Recommended first patch
+## Demo Patch
 
-Create this chain after launching:
+The app now boots into a proper demo session:
 
-1. Add `Oscillator`
-2. Add `Gain`
-3. Add `Output`
-4. Connect `Oscillator.audioOut -> Gain.audioIn`
-5. Connect `Gain.audioOut -> Output.audioIn`
+1. `BPM to LFO -> Time Signature`
+2. `Time Signature` drives the `MIDI Track` rate and loop motion
+3. `BPM to LFO` drives the `Audio Track` playback rate
+4. `LFO` modulates loop points and final gain
+5. `Audio Track`, `MIDI Track`, and `Oscillator` are summed through a `Sum` node, then passed through `Gain -> Output`
 
-Then add an `LFO` and connect `LFO.value -> Gain.gainCV` for modulation.
+The default patch is immediately audible from the oscillator and MIDI track. To bring the audio track in, select it and load a clip, then double-click the node to edit its waveform range and loop markers.
+
+Useful controls:
+
+- `Cmd+E`: switch between `Edit` and `Performance`
+- Right-click canvas: create nodes at the click position
+- `=` / `-`: zoom patch canvas
+- Arrow keys: pan patch canvas
+- `Delete` / `Backspace`: remove selected cable or node
 
 ## Important platform notes
 

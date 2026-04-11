@@ -1,10 +1,18 @@
 #include "PatchCanvas.h"
+#include "../Engine/NodeFactory.h"
+#include <set>
 
 namespace
 {
 constexpr auto nodeWidth = 180;
-constexpr auto portHeight = 22;
+constexpr auto portHeight = 24;
 constexpr auto titleHeight = 34;
+constexpr auto socketSize = 18;
+constexpr auto cableHitThickness = 12.0f;
+constexpr auto minZoom = 0.5f;
+constexpr auto maxZoom = 2.5f;
+constexpr auto zoomStep = 0.1f;
+constexpr auto panStep = 48.0f;
 
 juce::Colour colourForPortKind(PortKind kind)
 {
@@ -14,8 +22,12 @@ juce::Colour colourForPortKind(PortKind kind)
 class SocketButton final : public juce::Component
 {
 public:
-    SocketButton(SocketRef ref, std::function<void(const SocketRef&)> onClickCallback)
-        : socket(std::move(ref)), onClick(std::move(onClickCallback))
+    SocketButton(SocketRef ref,
+                 std::function<void(const SocketRef&)> onClickCallback,
+                 std::function<juce::Colour(const SocketRef&, bool)> colourResolverCallback)
+        : socket(std::move(ref)),
+          onClick(std::move(onClickCallback)),
+          colourResolver(std::move(colourResolverCallback))
     {
         setInterceptsMouseClicks(true, false);
         setRepaintsOnMouseActivity(true);
@@ -23,10 +35,11 @@ public:
 
     void paint(juce::Graphics& g) override
     {
-        const auto colour = colourForPortKind(socket.kind)
-                                .withMultipliedBrightness(isMouseOverOrDragging() ? 1.2f : 1.0f);
+        const auto colour = colourResolver != nullptr
+                                ? colourResolver(socket, isMouseOverOrDragging())
+                                : colourForPortKind(socket.kind);
         g.setColour(colour);
-        g.fillEllipse(getLocalBounds().toFloat().reduced(2.0f));
+        g.fillEllipse(getLocalBounds().toFloat().reduced(3.0f));
     }
 
     void mouseUp(const juce::MouseEvent&) override
@@ -38,20 +51,64 @@ public:
 
 private:
     std::function<void(const SocketRef&)> onClick;
+    std::function<juce::Colour(const SocketRef&, bool)> colourResolver;
 };
 } // namespace
+
+class PatchCanvas::DetachedEditorWindow final : public juce::DocumentWindow
+{
+public:
+    DetachedEditorWindow(const NodeSnapshot& snapshot,
+                         juce::Component& editorComponent,
+                         std::function<void()> closeCallback)
+        : juce::DocumentWindow(snapshot.name + " Editor",
+                               juce::Colour(0xff10141c),
+                               juce::DocumentWindow::closeButton),
+          onClose(std::move(closeCallback))
+    {
+        setUsingNativeTitleBar(true);
+        setResizable(true, true);
+        setContentNonOwned(&editorComponent, false);
+        centreWithSize(juce::jmax(360, snapshot.embeddedEditorBounds.getWidth() + 24),
+                       juce::jmax(240, snapshot.embeddedEditorBounds.getHeight() + 48));
+        setVisible(true);
+    }
+
+    void closeButtonPressed() override
+    {
+        if (onClose)
+            onClose();
+    }
+
+    void bringToFront()
+    {
+        setVisible(true);
+        toFront(true);
+    }
+
+private:
+    std::function<void()> onClose;
+};
 
 class PatchCanvas::NodeComponent final : public juce::Component
 {
 public:
     NodeComponent(NodeSnapshot snapshot,
+                  bool editable,
+                  float scale,
                   std::function<void(const juce::Uuid&, juce::Point<float>)> moveCallback,
                   std::function<void(const SocketRef&)> socketClickCallback,
-                  std::function<void(const juce::Uuid&)> selectCallback)
+                  std::function<void(const juce::Uuid&)> selectCallback,
+                  std::function<void(const juce::Uuid&)> openEditorCallback,
+                  std::function<juce::Colour(const SocketRef&, bool)> socketColourResolver)
         : node(std::move(snapshot)),
+          isEditable(editable),
+          zoomScale(scale),
           onMove(std::move(moveCallback)),
           onSocketClick(std::move(socketClickCallback)),
-          onSelect(std::move(selectCallback))
+          onSelect(std::move(selectCallback)),
+          onOpenEditor(std::move(openEditorCallback)),
+          resolveSocketColour(std::move(socketColourResolver))
     {
         buildSockets();
     }
@@ -66,67 +123,107 @@ public:
         g.drawRoundedRectangle(bounds.reduced(1.0f), 14.0f, isSelected ? 2.0f : 1.0f);
 
         g.setColour(juce::Colours::white);
-        g.setFont(juce::FontOptions(18.0f, juce::Font::bold));
-        g.drawText(node.name, 14, 8, getWidth() - 28, 20, juce::Justification::centredLeft);
+        g.setFont(juce::FontOptions(18.0f * zoomScale, juce::Font::bold));
+        g.drawText(node.name,
+                   scaled(14),
+                   scaled(8),
+                   getWidth() - scaled(28),
+                   scaled(20),
+                   juce::Justification::centredLeft);
 
-        g.setFont(juce::FontOptions(12.0f));
+        g.setFont(juce::FontOptions(12.0f * zoomScale));
         g.setColour(juce::Colour(0xff8c9aab));
 
-        auto y = static_cast<int>(titleHeight);
+        auto y = scaled(titleHeight);
 
         for (const auto& port : node.inputs)
         {
-            g.drawText(port.name, 18, y, getWidth() / 2 - 22, static_cast<int>(portHeight), juce::Justification::centredLeft);
-            y += static_cast<int>(portHeight);
+            g.drawText(port.name,
+                       scaled(18),
+                       y,
+                       getWidth() / 2 - scaled(22),
+                       scaled(portHeight),
+                       juce::Justification::centredLeft);
+            y += scaled(portHeight);
         }
 
-        y = static_cast<int>(titleHeight);
+        y = scaled(titleHeight);
 
         for (const auto& port : node.outputs)
         {
-            g.drawText(port.name, getWidth() / 2, y, getWidth() / 2 - 18, static_cast<int>(portHeight), juce::Justification::centredRight);
-            y += static_cast<int>(portHeight);
+            g.drawText(port.name,
+                       getWidth() / 2,
+                       y,
+                       getWidth() / 2 - scaled(18),
+                       scaled(portHeight),
+                       juce::Justification::centredRight);
+            y += scaled(portHeight);
         }
+
     }
 
     void resized() override
     {
-        auto y = static_cast<int>(titleHeight) + 4;
+        auto y = scaled(titleHeight) + scaled(4);
 
         for (auto* socket : inputSockets)
         {
-            socket->setBounds(6, y, 12, 12);
-            y += static_cast<int>(portHeight);
+            socket->setBounds(scaled(4), y - scaled(1), scaled(socketSize), scaled(socketSize));
+            y += scaled(portHeight);
         }
 
-        y = static_cast<int>(titleHeight) + 4;
+        y = scaled(titleHeight) + scaled(4);
 
         for (auto* socket : outputSockets)
         {
-            socket->setBounds(getWidth() - 18, y, 12, 12);
-            y += static_cast<int>(portHeight);
+            socket->setBounds(getWidth() - scaled(socketSize) - scaled(4),
+                              y - scaled(1),
+                              scaled(socketSize),
+                              scaled(socketSize));
+            y += scaled(portHeight);
         }
+
     }
 
     void mouseDown(const juce::MouseEvent& event) override
     {
-        dragAnchor = event.getPosition();
         onSelect(node.id);
+
+        if (! isEditable)
+            return;
+
+        dragAnchor = event.getPosition();
+        dragStartPosition = getPosition();
+        dragStartScreenPosition = event.getScreenPosition();
+        event.source.enableUnboundedMouseMovement(true, false);
         repaint();
     }
 
     void mouseDrag(const juce::MouseEvent& event) override
     {
+        if (! isEditable)
+            return;
+
         auto newBounds = getBounds();
-        newBounds.setPosition(newBounds.getPosition() + event.getPosition() - dragAnchor);
+        const auto screenDelta = event.getScreenPosition() - dragStartScreenPosition;
+        newBounds.setPosition(dragStartPosition + screenDelta);
         setBounds(newBounds);
         if (auto* parent = getParentComponent())
             parent->repaint();
     }
 
-    void mouseUp(const juce::MouseEvent&) override
+    void mouseUp(const juce::MouseEvent& event) override
     {
+        event.source.enableUnboundedMouseMovement(false);
         onMove(node.id, getPosition().toFloat());
+    }
+
+    void mouseDoubleClick(const juce::MouseEvent&) override
+    {
+        onSelect(node.id);
+
+        if (node.supportsEditor)
+            onOpenEditor(node.id);
     }
 
     void setSelected(bool selected)
@@ -149,12 +246,17 @@ public:
     }
 
 private:
+    int scaled(float value) const
+    {
+        return juce::jmax(1, static_cast<int>(std::round(value * zoomScale)));
+    }
+
     void buildSockets()
     {
         auto addPortButton = [this](bool isInput, int kindIndex, const PortInfo& info, juce::OwnedArray<SocketButton>& collection)
         {
             auto buttonSocket = SocketRef { node.id, isInput, kindIndex, info.kind };
-            auto* button = new SocketButton(buttonSocket, onSocketClick);
+            auto* button = new SocketButton(buttonSocket, onSocketClick, resolveSocketColour);
             collection.add(button);
             addAndMakeVisible(button);
         };
@@ -173,12 +275,18 @@ private:
     }
 
     NodeSnapshot node;
+    bool isEditable = false;
+    float zoomScale = 1.0f;
     std::function<void(const juce::Uuid&, juce::Point<float>)> onMove;
     std::function<void(const SocketRef&)> onSocketClick;
     std::function<void(const juce::Uuid&)> onSelect;
+    std::function<void(const juce::Uuid&)> onOpenEditor;
+    std::function<juce::Colour(const SocketRef&, bool)> resolveSocketColour;
     juce::OwnedArray<SocketButton> inputSockets;
     juce::OwnedArray<SocketButton> outputSockets;
     juce::Point<int> dragAnchor;
+    juce::Point<int> dragStartPosition;
+    juce::Point<int> dragStartScreenPosition;
     bool isSelected = false;
 };
 
@@ -191,6 +299,7 @@ PatchCanvas::PatchCanvas(PatchGraph& graphToEdit) : graph(graphToEdit)
 
 PatchCanvas::~PatchCanvas()
 {
+    detachedEditors.clear();
     graph.removeChangeListener(this);
 }
 
@@ -199,22 +308,45 @@ void PatchCanvas::setSelectionChangedCallback(std::function<void(std::optional<j
     onSelectionChanged = std::move(callback);
 }
 
+void PatchCanvas::setCreateNodeCallback(std::function<void(const juce::String&, juce::Point<float>)> callback)
+{
+    onCreateNode = std::move(callback);
+}
+
+void PatchCanvas::setToggleEditModeCallback(std::function<void()> callback)
+{
+    onToggleEditMode = std::move(callback);
+}
+
+void PatchCanvas::setEditMode(bool shouldEdit)
+{
+    editMode = shouldEdit;
+    pendingSocket.reset();
+    selectedConnection.reset();
+    repaint();
+}
+
 std::optional<juce::Uuid> PatchCanvas::getSelectedNode() const
 {
     return selectedNode;
 }
 
-void PatchCanvas::clearSelection()
+void PatchCanvas::setSelectedNode(std::optional<juce::Uuid> nodeId)
 {
-    selectedNode.reset();
+    selectedNode = std::move(nodeId);
 
     for (auto* node : nodeComponents)
-        node->setSelected(false);
+        node->setSelected(selectedNode.has_value() && node->getComponentID() == selectedNode->toString());
 
     if (onSelectionChanged)
-        onSelectionChanged(std::nullopt);
+        onSelectionChanged(selectedNode);
 
     repaint();
+}
+
+void PatchCanvas::clearSelection()
+{
+    setSelectedNode(std::nullopt);
 }
 
 void PatchCanvas::paint(juce::Graphics& g)
@@ -231,19 +363,14 @@ void PatchCanvas::paint(juce::Graphics& g)
 
     for (const auto& connection : graph.getConnections())
     {
-        const auto source = getSocketCanvasPosition(connection.source);
-        const auto destination = getSocketCanvasPosition(connection.destination);
+        const auto cable = createCablePath(connection);
+        const auto isSelected = selectedConnection.has_value() && connectionsMatch(*selectedConnection, connection);
 
-        juce::Path cable;
-        cable.startNewSubPath(source);
-
-        const auto controlOffset = juce::jmax(60.0f, std::abs(destination.x - source.x) * 0.4f);
-        cable.cubicTo(source.translated(controlOffset, 0.0f),
-                      destination.translated(-controlOffset, 0.0f),
-                      destination);
-
-        g.setColour(colourForPortKind(connection.source.kind).withAlpha(0.9f));
-        g.strokePath(cable, juce::PathStrokeType(3.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        g.setColour((isSelected ? juce::Colours::white : colourForPortKind(connection.source.kind))
+                        .withAlpha(isSelected ? 0.95f : 0.9f));
+        g.strokePath(cable, juce::PathStrokeType(isSelected ? 5.0f : 3.5f,
+                                                 juce::PathStrokeType::curved,
+                                                 juce::PathStrokeType::rounded));
     }
 
     if (pendingSocket.has_value())
@@ -265,9 +392,132 @@ void PatchCanvas::resized()
     rebuildNodes();
 }
 
+void PatchCanvas::mouseDown(const juce::MouseEvent& event)
+{
+    if (event.mods.isPopupMenu())
+        return;
+
+    if (! editMode)
+    {
+        selectedConnection.reset();
+        return;
+    }
+
+    if (const auto hitConnection = findConnectionAt(event.position))
+    {
+        selectedConnection = hitConnection;
+        selectedNode.reset();
+
+        for (auto* node : nodeComponents)
+            node->setSelected(false);
+
+        if (onSelectionChanged)
+            onSelectionChanged(std::nullopt);
+
+        repaint();
+        return;
+    }
+
+    selectedConnection.reset();
+    clearSelection();
+}
+
+void PatchCanvas::mouseUp(const juce::MouseEvent& event)
+{
+    if (! editMode || ! event.mods.isPopupMenu() || onCreateNode == nullptr)
+        return;
+
+    juce::PopupMenu menu;
+    auto itemId = 1;
+    const auto menuPosition = event.getPosition().toFloat();
+
+    for (const auto& type : NodeFactory::getAvailableTypes())
+        menu.addItem(itemId++, type);
+
+    const auto popupArea = juce::Rectangle<int>(event.getScreenPosition().x, event.getScreenPosition().y, 1, 1);
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(popupArea),
+                       [this, menuPosition](int result)
+                       {
+                           if (result <= 0)
+                               return;
+
+                           const auto types = NodeFactory::getAvailableTypes();
+                           const auto index = result - 1;
+
+                           if (juce::isPositiveAndBelow(index, types.size()))
+                               onCreateNode(types[index], screenToWorld(menuPosition));
+                       });
+}
+
 bool PatchCanvas::keyPressed(const juce::KeyPress& key)
 {
-    if ((key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) && selectedNode.has_value())
+    if (key == juce::KeyPress('e', juce::ModifierKeys::commandModifier, 0)
+        || key == juce::KeyPress('E', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
+    {
+        if (onToggleEditMode)
+            onToggleEditMode();
+        return true;
+    }
+
+    const auto textCharacter = key.getTextCharacter();
+
+    if (textCharacter == '=' || textCharacter == '+')
+    {
+        adjustZoom(zoomStep);
+        return true;
+    }
+
+    if (textCharacter == '-' || textCharacter == '_')
+    {
+        adjustZoom(-zoomStep);
+        return true;
+    }
+
+    if (key == juce::KeyPress::leftKey)
+    {
+        viewOffset += { panStep, 0.0f };
+        rebuildNodes();
+        return true;
+    }
+
+    if (key == juce::KeyPress::rightKey)
+    {
+        viewOffset += { -panStep, 0.0f };
+        rebuildNodes();
+        return true;
+    }
+
+    if (key == juce::KeyPress::upKey)
+    {
+        viewOffset += { 0.0f, panStep };
+        rebuildNodes();
+        return true;
+    }
+
+    if (key == juce::KeyPress::downKey)
+    {
+        viewOffset += { 0.0f, -panStep };
+        rebuildNodes();
+        return true;
+    }
+
+    if (key == juce::KeyPress::escapeKey)
+    {
+        pendingSocket.reset();
+        selectedConnection.reset();
+        repaint();
+        return true;
+    }
+
+    if (editMode && (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) && selectedConnection.has_value())
+    {
+        graph.disconnect(*selectedConnection);
+        selectedConnection.reset();
+        return true;
+    }
+
+    if (editMode && (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) && selectedNode.has_value())
     {
         graph.removeNode(*selectedNode);
         selectedNode.reset();
@@ -283,14 +533,17 @@ bool PatchCanvas::keyPressed(const juce::KeyPress& key)
 void PatchCanvas::rebuildNodes()
 {
     const auto nodes = graph.getNodes();
+    syncDetachedEditors(nodes);
     nodeComponents.clear();
 
     for (const auto& snapshot : nodes)
     {
         auto* component = new NodeComponent(snapshot,
+                                            editMode,
+                                            zoomScale,
                                             [this](const juce::Uuid& id, juce::Point<float> position)
                                             {
-                                                graph.setNodePosition(id, position);
+                                                graph.setNodePosition(id, screenToWorld(position));
                                             },
                                             [this](const SocketRef& socket)
                                             {
@@ -299,19 +552,51 @@ void PatchCanvas::rebuildNodes()
                                             [this](const juce::Uuid& id)
                                             {
                                                 selectedNode = id;
+                                                selectedConnection.reset();
 
                                                 for (auto* node : nodeComponents)
                                                     node->setSelected(node->getComponentID() == id.toString());
 
                                                 if (onSelectionChanged)
                                                     onSelectionChanged(selectedNode);
+                                            },
+                                            [this](const juce::Uuid& id)
+                                            {
+                                                openDetachedEditorForNode(id);
+                                            },
+                                            [this](const SocketRef& socket, bool isHovered)
+                                            {
+                                                auto colour = colourForPortKind(socket.kind);
+
+                                                if (! editMode)
+                                                    return colour.withAlpha(0.45f);
+
+                                                if (! pendingSocket.has_value())
+                                                    return colour.withMultipliedBrightness(isHovered ? 1.25f : 1.0f);
+
+                                                if (pendingSocket->nodeId == socket.nodeId
+                                                    && pendingSocket->isInput == socket.isInput
+                                                    && pendingSocket->portIndex == socket.portIndex
+                                                    && pendingSocket->kind == socket.kind)
+                                                    return juce::Colours::white;
+
+                                                const auto compatible = pendingSocket->isInput != socket.isInput
+                                                                     && pendingSocket->kind == socket.kind
+                                                                     && pendingSocket->nodeId != socket.nodeId;
+
+                                                if (compatible)
+                                                    return colour.withMultipliedBrightness(isHovered ? 1.45f : 1.2f);
+
+                                                return colour.withAlpha(0.22f);
                                             });
 
         component->setComponentID(snapshot.id.toString());
-        component->setBounds(static_cast<int>(snapshot.position.x),
-                             static_cast<int>(snapshot.position.y),
-                             nodeWidth,
-                             static_cast<int>(titleHeight + portHeight * static_cast<float>(juce::jmax(snapshot.inputs.size(), snapshot.outputs.size())) + 12.0f));
+        const auto screenPosition = worldToScreen(snapshot.position);
+        const auto nodeHeight = titleHeight + portHeight * static_cast<float>(juce::jmax(snapshot.inputs.size(), snapshot.outputs.size())) + 12.0f;
+        component->setBounds(static_cast<int>(std::round(screenPosition.x)),
+                             static_cast<int>(std::round(screenPosition.y)),
+                             static_cast<int>(std::round(static_cast<float>(nodeWidth) * zoomScale)),
+                             static_cast<int>(std::round(nodeHeight * zoomScale)));
         component->setSelected(selectedNode.has_value() && *selectedNode == snapshot.id);
         addAndMakeVisible(component);
         nodeComponents.add(component);
@@ -326,27 +611,165 @@ void PatchCanvas::changeListenerCallback(juce::ChangeBroadcaster* source)
         rebuildNodes();
 }
 
+void PatchCanvas::syncDetachedEditors(const std::vector<NodeSnapshot>& nodes)
+{
+    std::set<juce::String, std::less<>> activeIds;
+
+    for (const auto& snapshot : nodes)
+    {
+        if (! snapshot.supportsEditor || ! snapshot.editorOpen || ! snapshot.editorDetached)
+            continue;
+
+        const auto key = snapshot.id.toString();
+        activeIds.insert(key);
+
+        if (detachedEditors.find(key) == detachedEditors.end())
+        {
+            if (auto* editor = graph.getNodeEmbeddedEditor(snapshot.id))
+            {
+                detachedEditors[key] = std::make_unique<DetachedEditorWindow>(
+                    snapshot,
+                    *editor,
+                    [this, nodeId = snapshot.id]
+                    {
+                        graph.setNodeEditorDetached(nodeId, false);
+                        graph.setNodeEditorOpen(nodeId, false);
+                    });
+            }
+        }
+    }
+
+    for (auto it = detachedEditors.begin(); it != detachedEditors.end();)
+    {
+        if (activeIds.count(it->first) == 0)
+            it = detachedEditors.erase(it);
+        else
+            ++it;
+    }
+}
+
+void PatchCanvas::openDetachedEditorForNode(const juce::Uuid& nodeId)
+{
+    const auto key = nodeId.toString();
+
+    if (const auto it = detachedEditors.find(key); it != detachedEditors.end())
+    {
+        it->second->bringToFront();
+        return;
+    }
+
+    graph.setNodeEditorOpen(nodeId, true);
+    graph.setNodeEditorDetached(nodeId, true);
+}
+
+juce::Path PatchCanvas::createCablePath(const GraphConnection& connection) const
+{
+    const auto source = getSocketCanvasPosition(connection.source);
+    const auto destination = getSocketCanvasPosition(connection.destination);
+
+    juce::Path cable;
+    cable.startNewSubPath(source);
+
+    const auto controlOffset = juce::jmax(60.0f, std::abs(destination.x - source.x) * 0.4f);
+    cable.cubicTo(source.translated(controlOffset, 0.0f),
+                  destination.translated(-controlOffset, 0.0f),
+                  destination);
+    return cable;
+}
+
+std::optional<GraphConnection> PatchCanvas::findConnectionAt(juce::Point<float> point) const
+{
+    for (const auto& connection : graph.getConnections())
+    {
+        const auto cable = createCablePath(connection);
+
+        if (cable.getBounds().expanded(cableHitThickness).contains(point))
+            if (cable.intersectsLine({ point.translated(-cableHitThickness, 0.0f),
+                                       point.translated(cableHitThickness, 0.0f) })
+                || cable.intersectsLine({ point.translated(0.0f, -cableHitThickness),
+                                          point.translated(0.0f, cableHitThickness) }))
+                return connection;
+    }
+
+    return std::nullopt;
+}
+
+bool PatchCanvas::connectionsMatch(const GraphConnection& lhs, const GraphConnection& rhs)
+{
+    return lhs.source.nodeId == rhs.source.nodeId
+        && lhs.source.portIndex == rhs.source.portIndex
+        && lhs.source.kind == rhs.source.kind
+        && lhs.destination.nodeId == rhs.destination.nodeId
+        && lhs.destination.portIndex == rhs.destination.portIndex
+        && lhs.destination.kind == rhs.destination.kind;
+}
+
+juce::Point<float> PatchCanvas::worldToScreen(juce::Point<float> worldPoint) const
+{
+    return { worldPoint.x * zoomScale + viewOffset.x,
+             worldPoint.y * zoomScale + viewOffset.y };
+}
+
+juce::Point<float> PatchCanvas::screenToWorld(juce::Point<float> screenPoint) const
+{
+    return { (screenPoint.x - viewOffset.x) / zoomScale,
+             (screenPoint.y - viewOffset.y) / zoomScale };
+}
+
+void PatchCanvas::adjustZoom(float zoomDelta)
+{
+    const auto oldZoom = zoomScale;
+    const auto newZoom = juce::jlimit(minZoom, maxZoom, zoomScale + zoomDelta);
+
+    if (std::abs(newZoom - oldZoom) < 0.0001f)
+        return;
+
+    const auto viewCentre = getLocalBounds().toFloat().getCentre();
+    const auto worldCentre = screenToWorld(viewCentre);
+    zoomScale = newZoom;
+    viewOffset = { viewCentre.x - worldCentre.x * zoomScale,
+                   viewCentre.y - worldCentre.y * zoomScale };
+    rebuildNodes();
+}
+
 void PatchCanvas::handleSocketClicked(const SocketRef& socket)
 {
+    if (! editMode)
+        return;
+
     if (!pendingSocket.has_value())
+    {
+        pendingSocket = socket;
+        selectedConnection.reset();
+        repaint();
+        return;
+    }
+
+    const auto first = *pendingSocket;
+
+    if (first.nodeId == socket.nodeId
+        && first.isInput == socket.isInput
+        && first.portIndex == socket.portIndex
+        && first.kind == socket.kind)
+    {
+        pendingSocket.reset();
+        repaint();
+        return;
+    }
+
+    if (first.isInput == socket.isInput || first.kind != socket.kind || first.nodeId == socket.nodeId)
     {
         pendingSocket = socket;
         repaint();
         return;
     }
 
-    const auto first = *pendingSocket;
     pendingSocket.reset();
-
-    if (first.isInput == socket.isInput)
-    {
-        repaint();
-        return;
-    }
 
     const auto source = first.isInput ? socket : first;
     const auto destination = first.isInput ? first : socket;
     graph.connect(source, destination);
+    selectedConnection.reset();
     repaint();
 }
 

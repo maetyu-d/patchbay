@@ -44,12 +44,16 @@ target_sources(PatchBayDAW
         Source/App/MainWindow.cpp
         Source/App/MainWindow.h
         Source/Engine/ModuleNode.h
+        Source/Engine/ExternalPluginManager.cpp
+        Source/Engine/ExternalPluginManager.h
         Source/Engine/NodeFactory.cpp
         Source/Engine/NodeFactory.h
         Source/Engine/PatchGraph.cpp
         Source/Engine/PatchGraph.h
         Source/Modules/ExampleModules.cpp
         Source/Modules/ExampleModules.h
+        Source/Modules/ExternalPluginModule.cpp
+        Source/Modules/ExternalPluginModule.h
         Source/Modules/ModuleCores.h
         Source/UI/MainComponent.cpp
         Source/UI/MainComponent.h
@@ -63,6 +67,8 @@ target_compile_definitions(PatchBayDAW
     PRIVATE
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
+        JUCE_PLUGINHOST_AU=1
+        JUCE_PLUGINHOST_VST3=1
 )
 
 target_link_libraries(PatchBayDAW
