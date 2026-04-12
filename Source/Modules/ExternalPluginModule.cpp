@@ -240,7 +240,21 @@ juce::Component* ExternalPluginModule::getEmbeddedEditor()
         editor = instance->createEditorIfNeeded();
 
     if (editor != nullptr)
-        editor->setScaleFactor(editorScale);
+    {
+        effectiveEditorScale = editorScale;
+
+        if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+        {
+            const auto userArea = display->userArea.reduced(36);
+            const auto editorWidth = juce::jmax(1, editor->getWidth());
+            const auto editorHeight = juce::jmax(1, editor->getHeight());
+            const auto widthScale = static_cast<float>(userArea.getWidth()) / static_cast<float>(editorWidth);
+            const auto heightScale = static_cast<float>(userArea.getHeight()) / static_cast<float>(editorHeight);
+            effectiveEditorScale = juce::jlimit(0.5f, 2.0f, juce::jmin(editorScale, juce::jmin(widthScale, heightScale)));
+        }
+
+        editor->setScaleFactor(effectiveEditorScale);
+    }
 
     return editor;
 }
@@ -249,12 +263,12 @@ juce::Rectangle<int> ExternalPluginModule::getEmbeddedEditorBoundsHint() const
 {
     if (editor != nullptr)
         return { 0, 0,
-                 static_cast<int>(std::round(static_cast<float>(editor->getWidth()) * editorScale)),
-                 static_cast<int>(std::round(static_cast<float>(editor->getHeight()) * editorScale)) };
+                 static_cast<int>(std::round(static_cast<float>(editor->getWidth()) * effectiveEditorScale)),
+                 static_cast<int>(std::round(static_cast<float>(editor->getHeight()) * effectiveEditorScale)) };
 
     return { 0, 0,
-             static_cast<int>(std::round(320.0f * editorScale)),
-             static_cast<int>(std::round(220.0f * editorScale)) };
+             static_cast<int>(std::round(320.0f * effectiveEditorScale)),
+             static_cast<int>(std::round(220.0f * effectiveEditorScale)) };
 }
 
 bool ExternalPluginModule::supportsEmbeddedEditor() const
@@ -293,9 +307,10 @@ float ExternalPluginModule::getEditorScale() const
 void ExternalPluginModule::setEditorScale(float scale)
 {
     editorScale = juce::jlimit(0.5f, 2.0f, scale);
+    effectiveEditorScale = editorScale;
 
     if (editor != nullptr)
-        editor->setScaleFactor(editorScale);
+        editor->setScaleFactor(effectiveEditorScale);
 }
 
 void ExternalPluginModule::setPluginIdentifier(const juce::String& identifier)
@@ -354,7 +369,7 @@ void ExternalPluginModule::instantiateIfNeeded()
         }
 
         if (editor != nullptr)
-            editor->setScaleFactor(editorScale);
+            editor->setScaleFactor(effectiveEditorScale);
     }
 }
 

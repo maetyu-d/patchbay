@@ -56,4 +56,5 @@ private:
     bool editorOpen = false;
     bool editorDetached = false;
     float editorScale = 1.0f;
+    float effectiveEditorScale = 1.0f;
 };

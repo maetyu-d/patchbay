@@ -37,6 +37,46 @@ double msToSamples(double sampleRate, float milliseconds)
     return juce::jmax(1.0, sampleRate * static_cast<double>(juce::jmax(1.0f, milliseconds)) * 0.001);
 }
 
+juce::String encodeAudioBuffer(const juce::AudioBuffer<float>& buffer, double sampleRate)
+{
+    juce::MemoryOutputStream stream;
+    stream.writeInt(buffer.getNumChannels());
+    stream.writeInt(buffer.getNumSamples());
+    stream.writeDouble(sampleRate);
+
+    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        stream.write(buffer.getReadPointer(channel),
+                     static_cast<size_t>(static_cast<size_t>(buffer.getNumSamples()) * sizeof(float)));
+
+    return stream.getMemoryBlock().toBase64Encoding();
+}
+
+bool decodeAudioBuffer(const juce::String& encoded, juce::AudioBuffer<float>& buffer, double& sampleRate)
+{
+    if (encoded.isEmpty())
+        return false;
+
+    juce::MemoryBlock memory;
+    if (! memory.fromBase64Encoding(encoded))
+        return false;
+
+    juce::MemoryInputStream stream(memory, false);
+    const auto channels = stream.readInt();
+    const auto samples = stream.readInt();
+    sampleRate = stream.readDouble();
+
+    if (channels <= 0 || samples <= 0)
+        return false;
+
+    buffer.setSize(channels, samples);
+
+    for (int channel = 0; channel < channels; ++channel)
+        stream.read(buffer.getWritePointer(channel),
+                    static_cast<int>(static_cast<size_t>(samples) * sizeof(float)));
+
+    return true;
+}
+
 class OscillatorModule final : public ModuleNode
 {
 public:
@@ -55,16 +95,16 @@ public:
     std::vector<PortInfo> getInputPorts() const override
     {
         return {
-            { "pitchCV", PortKind::modulation },
-            { "levelCV", PortKind::modulation }
+            { "Pitch", PortKind::modulation },
+            { "Level", PortKind::modulation }
         };
     }
 
     std::vector<PortInfo> getOutputPorts() const override
     {
         return {
-            { "audioOut", PortKind::audio },
-            { "rate", PortKind::modulation }
+            { "Audio", PortKind::audio },
+            { "Rate", PortKind::modulation }
         };
     }
 
@@ -140,9 +180,9 @@ public:
     std::vector<PortInfo> getOutputPorts() const override
     {
         return {
-            { "value", PortKind::modulation },
-            { "rateHz", PortKind::modulation },
-            { "phase01", PortKind::modulation }
+            { "Value", PortKind::modulation },
+            { "Rate Hz", PortKind::modulation },
+            { "Phase", PortKind::modulation }
         };
     }
 
@@ -202,8 +242,8 @@ public:
     std::vector<PortInfo> getOutputPorts() const override
     {
         return {
-            { "rateHz", PortKind::modulation },
-            { "phase01", PortKind::modulation }
+            { "Rate Hz", PortKind::modulation },
+            { "Phase", PortKind::modulation }
         };
     }
     std::vector<NodeParameterSpec> getParameterSpecs() const override
@@ -267,13 +307,13 @@ public:
     juce::String getTypeId() const override { return "TimeSignature"; }
     juce::String getDisplayName() const override { return "Time Signature"; }
     juce::Colour getNodeColour() const override { return juce::Colour(0xffc4b5fd); }
-    std::vector<PortInfo> getInputPorts() const override { return { { "rateHzIn", PortKind::modulation } }; }
+    std::vector<PortInfo> getInputPorts() const override { return { { "Rate In", PortKind::modulation } }; }
     std::vector<PortInfo> getOutputPorts() const override
     {
         return {
-            { "beatRate", PortKind::modulation },
-            { "barRate", PortKind::modulation },
-            { "barPhase01", PortKind::modulation }
+            { "Beat Rate", PortKind::modulation },
+            { "Bar Rate", PortKind::modulation },
+            { "Bar Phase", PortKind::modulation }
         };
     }
     std::vector<NodeParameterSpec> getParameterSpecs() const override
@@ -345,15 +385,15 @@ public:
     std::vector<PortInfo> getInputPorts() const override
     {
         return {
-            { "triggerIn", PortKind::modulation }
+            { "Trigger", PortKind::modulation }
         };
     }
 
     std::vector<PortInfo> getOutputPorts() const override
     {
         return {
-            { "env", PortKind::modulation },
-            { "endTrig", PortKind::modulation }
+            { "Envelope", PortKind::modulation },
+            { "Done", PortKind::modulation }
         };
     }
 
@@ -454,15 +494,15 @@ public:
     std::vector<PortInfo> getInputPorts() const override
     {
         return {
-            { "gateIn", PortKind::modulation }
+            { "Gate", PortKind::modulation }
         };
     }
 
     std::vector<PortInfo> getOutputPorts() const override
     {
         return {
-            { "env", PortKind::modulation },
-            { "endTrig", PortKind::modulation }
+            { "Envelope", PortKind::modulation },
+            { "Done", PortKind::modulation }
         };
     }
 
@@ -583,16 +623,16 @@ public:
     std::vector<PortInfo> getInputPorts() const override
     {
         return {
-            { "audioIn", PortKind::audio },
-            { "cutoffCV", PortKind::modulation },
-            { "resonanceCV", PortKind::modulation }
+            { "Audio In", PortKind::audio },
+            { "Cutoff", PortKind::modulation },
+            { "Resonance", PortKind::modulation }
         };
     }
 
     std::vector<PortInfo> getOutputPorts() const override
     {
         return {
-            { "audioOut", PortKind::audio }
+            { "Audio Out", PortKind::audio }
         };
     }
 
@@ -708,15 +748,15 @@ public:
     std::vector<PortInfo> getInputPorts() const override
     {
         return {
-            { "audioIn", PortKind::audio },
-            { "gainCV", PortKind::modulation }
+            { "Audio In", PortKind::audio },
+            { "Gain CV", PortKind::modulation }
         };
     }
 
     std::vector<PortInfo> getOutputPorts() const override
     {
         return {
-            { "audioOut", PortKind::audio }
+            { "Audio Out", PortKind::audio }
         };
     }
 
@@ -760,15 +800,15 @@ public:
     std::vector<PortInfo> getInputPorts() const override
     {
         return {
-            { "a", PortKind::modulation },
-            { "b", PortKind::modulation }
+            { "A", PortKind::modulation },
+            { "B", PortKind::modulation }
         };
     }
 
     std::vector<PortInfo> getOutputPorts() const override
     {
         return {
-            { "result", PortKind::modulation }
+            { "Result", PortKind::modulation }
         };
     }
 
@@ -879,14 +919,14 @@ public:
     std::vector<PortInfo> getInputPorts() const override
     {
         return {
-            { "audioIn", PortKind::audio }
+            { "Audio In", PortKind::audio }
         };
     }
 
     std::vector<PortInfo> getOutputPorts() const override
     {
         return {
-            { "monitor", PortKind::audio }
+            { "Monitor", PortKind::audio }
         };
     }
 
@@ -939,14 +979,15 @@ public:
         ports.reserve(static_cast<size_t>(inputCount));
 
         for (int index = 0; index < inputCount; ++index)
-            ports.push_back({ "in" + juce::String(index + 1), PortKind::audio });
+            ports.push_back({ "In " + juce::String(index + 1), PortKind::audio });
+
 
         return ports;
     }
 
     std::vector<PortInfo> getOutputPorts() const override
     {
-        return { { "mixOut", PortKind::audio } };
+        return { { "Mix Out", PortKind::audio } };
     }
 
     std::vector<NodeParameterSpec> getParameterSpecs() const override
@@ -1001,9 +1042,9 @@ public:
     std::vector<PortInfo> getInputPorts() const override
     {
         return {
-            { "audioIn", PortKind::audio },
-            { "cvIn", PortKind::modulation },
-            { "triggerIn", PortKind::modulation }
+            { "Audio In", PortKind::audio },
+            { "CV In", PortKind::modulation },
+            { "Step", PortKind::modulation }
         };
     }
 
@@ -1014,8 +1055,8 @@ public:
 
         for (int index = 0; index < destinationCount; ++index)
         {
-            ports.push_back({ "audio" + juce::String(index + 1), PortKind::audio });
-            ports.push_back({ "cv" + juce::String(index + 1), PortKind::modulation });
+            ports.push_back({ "Audio " + juce::String(index + 1), PortKind::audio });
+            ports.push_back({ "CV " + juce::String(index + 1), PortKind::modulation });
         }
 
         return ports;
@@ -1109,16 +1150,16 @@ public:
     std::vector<PortInfo> getInputPorts() const override
     {
         return {
-            { "rateCV", PortKind::modulation },
-            { "loopStartCV", PortKind::modulation },
-            { "loopEndCV", PortKind::modulation }
+            { "Speed", PortKind::modulation },
+            { "Loop Start", PortKind::modulation },
+            { "Loop End", PortKind::modulation }
         };
     }
     std::vector<PortInfo> getOutputPorts() const override
     {
         return {
-            { "audioOut", PortKind::audio },
-            { "endTrig", PortKind::modulation }
+            { "Audio Out", PortKind::audio },
+            { "Done", PortKind::modulation }
         };
     }
 
@@ -1239,10 +1280,38 @@ public:
         return true;
     }
 
+    void paintWaveform(float normalisedX, float normalisedY, float brushSize)
+    {
+        if (audioClip.getNumSamples() == 0)
+            return;
+
+        const auto clampedX = juce::jlimit(0.0f, 1.0f, normalisedX);
+        const auto clampedY = juce::jlimit(0.0f, 1.0f, normalisedY);
+        const auto targetAmplitude = juce::jmap(clampedY, 1.0f, -1.0f);
+        const auto centreSample = juce::jlimit(0, audioClip.getNumSamples() - 1,
+                                               static_cast<int>(std::round(clampedX * static_cast<float>(audioClip.getNumSamples() - 1))));
+        const auto radiusSamples = juce::jmax(1, static_cast<int>(std::round(brushSize * static_cast<float>(audioClip.getNumSamples()))));
+
+        for (int sample = juce::jmax(0, centreSample - radiusSamples); sample < juce::jmin(audioClip.getNumSamples(), centreSample + radiusSamples + 1); ++sample)
+        {
+            const auto distance = std::abs(sample - centreSample);
+            const auto blend = 1.0f - (static_cast<float>(distance) / static_cast<float>(juce::jmax(1, radiusSamples)));
+            const auto strength = blend * 0.85f;
+
+            for (int channel = 0; channel < audioClip.getNumChannels(); ++channel)
+            {
+                const auto current = audioClip.getSample(channel, sample);
+                const auto painted = juce::jlimit(-1.0f, 1.0f, current + (targetAmplitude - current) * strength);
+                audioClip.setSample(channel, sample, painted);
+            }
+        }
+    }
+
     juce::ValueTree saveState() const override
     {
         auto state = ModuleNode::saveState();
         state.setProperty("filePath", filePath, nullptr);
+        state.setProperty("audioData", encodeAudioBuffer(audioClip, audioClipSampleRate), nullptr);
         state.setProperty("editorOpen", editorOpen, nullptr);
         state.setProperty("editorDetached", editorDetached, nullptr);
         state.setProperty("editorScale", editorScale, nullptr);
@@ -1252,9 +1321,13 @@ public:
     void loadState(const juce::ValueTree& state) override
     {
         ModuleNode::loadState(state);
+        const auto encodedAudio = state.getProperty("audioData").toString();
         const auto path = state.getProperty("filePath").toString();
-        if (path.isNotEmpty())
+
+        if (! decodeAudioBuffer(encodedAudio, audioClip, audioClipSampleRate) && path.isNotEmpty())
             loadFile(juce::File(path));
+
+        filePath = path;
 
         editorOpen = static_cast<bool>(state.getProperty("editorOpen", false));
         editorDetached = static_cast<bool>(state.getProperty("editorDetached", false));
@@ -1333,16 +1406,16 @@ public:
     std::vector<PortInfo> getInputPorts() const override
     {
         return {
-            { "rateCV", PortKind::modulation },
-            { "loopStartCV", PortKind::modulation },
-            { "loopEndCV", PortKind::modulation }
+            { "Speed", PortKind::modulation },
+            { "Loop Start", PortKind::modulation },
+            { "Loop End", PortKind::modulation }
         };
     }
     std::vector<PortInfo> getOutputPorts() const override
     {
         return {
-            { "audioOut", PortKind::audio },
-            { "endTrig", PortKind::modulation }
+            { "Audio Out", PortKind::audio },
+            { "Done", PortKind::modulation }
         };
     }
 
@@ -1589,15 +1662,15 @@ public:
     {
         addAndMakeVisible(titleLabel);
         titleLabel.setColour(juce::Label::textColourId, juce::Colours::white);
-        titleLabel.setFont(juce::FontOptions(17.0f, juce::Font::bold));
+        titleLabel.setFont(juce::FontOptions(15.5f, juce::Font::bold));
         titleLabel.setJustificationType(juce::Justification::centredLeft);
 
         addAndMakeVisible(infoLabel);
-        infoLabel.setColour(juce::Label::textColourId, juce::Colour(0xff9fb0c4));
+        infoLabel.setColour(juce::Label::textColourId, juce::Colour(0xff8894a5));
         infoLabel.setJustificationType(juce::Justification::centredLeft);
 
         addAndMakeVisible(zoomLabel);
-        zoomLabel.setText("Timeline Zoom", juce::dontSendNotification);
+        zoomLabel.setText("Zoom", juce::dontSendNotification);
         zoomLabel.setColour(juce::Label::textColourId, juce::Colour(0xffdbe3ec));
         addAndMakeVisible(zoomSlider);
         zoomSlider.setRange(1.0, 24.0, 0.1);
@@ -1729,6 +1802,11 @@ public:
             dragTarget = DragTarget::loopStart;
         else if (std::abs(event.x - loopEndX) < 10)
             dragTarget = DragTarget::loopEnd;
+        else
+        {
+            dragTarget = DragTarget::waveformPaint;
+            paintWaveformAt(event.getPosition(), waveformArea);
+        }
     }
 
     void mouseDrag(const juce::MouseEvent& event) override
@@ -1747,6 +1825,8 @@ public:
             module.setParameterValue("loopStart", normalised);
         else if (dragTarget == DragTarget::loopEnd)
             module.setParameterValue("loopEnd", normalised);
+        else if (dragTarget == DragTarget::waveformPaint)
+            paintWaveformAt(event.getPosition(), waveformArea);
 
         repaint();
     }
@@ -1763,13 +1843,23 @@ private:
         regionStart,
         regionEnd,
         loopStart,
-        loopEnd
+        loopEnd,
+        waveformPaint
     };
+
+    void paintWaveformAt(juce::Point<int> position, juce::Rectangle<int> waveformArea)
+    {
+        const auto normalisedX = juce::jlimit(0.0f, 1.0f,
+                                              static_cast<float>(position.x - waveformArea.getX()) / static_cast<float>(juce::jmax(1, waveformArea.getWidth())));
+        const auto normalisedY = juce::jlimit(0.0f, 1.0f,
+                                              static_cast<float>(position.y - waveformArea.getY()) / static_cast<float>(juce::jmax(1, waveformArea.getHeight())));
+        module.paintWaveform(normalisedX, normalisedY, 0.0025f / juce::jmax(1.0f, horizontalZoom));
+    }
 
     void timerCallback() override
     {
-        titleLabel.setText(module.getLoadedFileName().isNotEmpty() ? module.getLoadedFileName() : "Audio Editor", juce::dontSendNotification);
-        infoLabel.setText("Waveform editor with draggable start/end and loop points, inspired by Audacity.", juce::dontSendNotification);
+        titleLabel.setText(module.getLoadedFileName().isNotEmpty() ? module.getLoadedFileName() : "Audio", juce::dontSendNotification);
+        infoLabel.setText("Drag markers. Paint the waveform.", juce::dontSendNotification);
         repaint();
     }
 

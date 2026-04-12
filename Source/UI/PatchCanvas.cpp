@@ -4,7 +4,7 @@
 
 namespace
 {
-constexpr auto nodeWidth = 180;
+constexpr auto nodeWidth = 210;
 constexpr auto portHeight = 24;
 constexpr auto titleHeight = 34;
 constexpr auto socketSize = 18;
@@ -69,8 +69,16 @@ public:
         setUsingNativeTitleBar(true);
         setResizable(true, true);
         setContentNonOwned(&editorComponent, false);
-        centreWithSize(juce::jmax(360, snapshot.embeddedEditorBounds.getWidth() + 24),
-                       juce::jmax(240, snapshot.embeddedEditorBounds.getHeight() + 48));
+        const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
+        const auto userArea = display != nullptr ? display->userArea.reduced(24) : juce::Rectangle<int>(1200, 800);
+        const auto preferredWidth = juce::jmax(360, snapshot.embeddedEditorBounds.getWidth() + 24);
+        const auto preferredHeight = juce::jmax(240, snapshot.embeddedEditorBounds.getHeight() + 48);
+        const auto fittedWidth = juce::jmin(preferredWidth, userArea.getWidth());
+        const auto fittedHeight = juce::jmin(preferredHeight, userArea.getHeight());
+        auto fittedBounds = juce::Rectangle<int>(fittedWidth, fittedHeight).withCentre(userArea.getCentre());
+        fittedBounds.setPosition(juce::jlimit(userArea.getX(), userArea.getRight() - fittedBounds.getWidth(), fittedBounds.getX()),
+                                 juce::jlimit(userArea.getY(), userArea.getBottom() - fittedBounds.getHeight(), fittedBounds.getY()));
+        setBounds(fittedBounds);
         setVisible(true);
     }
 
@@ -131,7 +139,7 @@ public:
                    scaled(20),
                    juce::Justification::centredLeft);
 
-        g.setFont(juce::FontOptions(12.0f * zoomScale));
+        g.setFont(juce::FontOptions(11.5f * zoomScale));
         g.setColour(juce::Colour(0xff8c9aab));
 
         auto y = scaled(titleHeight);

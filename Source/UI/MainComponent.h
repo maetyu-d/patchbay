@@ -83,6 +83,7 @@ private:
     void showNodeInspector(const NodeSnapshot& node);
     void showTrackInspector(const NodeSnapshot& track);
     void autoWireTrackNode(const juce::Uuid& trackId, bool isMidiTrack);
+    void toggleInspectorCollapsed();
     void toggleEditMode();
     void applyModeState();
 
@@ -91,14 +92,15 @@ private:
     TrackView trackView;
 
     juce::TextButton saveButton { "Save" };
-    juce::TextButton loadButton { "Load" };
-    juce::TextButton transportButton { "Stop" };
+    juce::TextButton loadButton { "Open" };
+    juce::TextButton transportButton { "Edit" };
     juce::TextButton rewindButton { "Rewind" };
-    juce::TextButton addAudioTrackButton { "+ Audio" };
-    juce::TextButton addMidiTrackButton { "+ MIDI" };
-    juce::TextButton scanPluginsButton { "Scan Plugins" };
-    juce::TextButton loadTrackClipButton { "Load Clip" };
-    juce::ToggleButton trackMuteToggle { "Mute Track" };
+    juce::TextButton addAudioTrackButton { "Audio" };
+    juce::TextButton addMidiTrackButton { "MIDI" };
+    juce::TextButton scanPluginsButton { "Scan" };
+    juce::TextButton toggleInspectorButton { "Hide" };
+    juce::TextButton loadTrackClipButton { "Load" };
+    juce::ToggleButton trackMuteToggle { "Mute" };
     InspectorResizeHandle inspectorResizeHandle;
     juce::Label hintLabel;
     juce::Label inspectorTitle;
@@ -115,5 +117,7 @@ private:
     std::optional<juce::Uuid> selectedTrackId;
     bool editMode = false;
     int inspectorPanelWidth = 300;
+    int lastExpandedInspectorWidth = 300;
     bool resizingInspector = false;
+    bool inspectorCollapsed = false;
 };
