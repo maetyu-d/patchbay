@@ -5,7 +5,7 @@
 
 juce::StringArray NodeFactory::getAvailableTypes()
 {
-    return { "Oscillator", "LFO", "BpmToLfo", "TimeSignature", "AD", "ADSR", "Filter", "Gain", "Add", "Subtract", "Multiply", "Divide", "Sum", "Router", "Plugin", "Output", "AudioTrack", "MidiTrack" };
+    return { "Oscillator", "LFO", "Metronome", "Comparator", "BpmToLfo", "TimeSignature", "AD", "ADSR", "Filter", "Gain", "Add", "Subtract", "Multiply", "Divide", "Sum", "Router", "Plugin", "Output", "AudioTrack", "MidiTrack" };
 }
 
 std::unique_ptr<ModuleNode> NodeFactory::create(const juce::String& type)
@@ -15,6 +15,12 @@ std::unique_ptr<ModuleNode> NodeFactory::create(const juce::String& type)
 
     if (type == "LFO")
         return createLfoModule();
+
+    if (type == "Metronome")
+        return createMetronomeModule();
+
+    if (type == "Comparator")
+        return createComparatorModule();
 
     if (type == "BpmToLfo")
         return createBpmToLfoModule();

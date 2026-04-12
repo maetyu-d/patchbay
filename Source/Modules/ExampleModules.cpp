@@ -232,6 +232,100 @@ private:
     float depth = 0.45f;
 };
 
+class MetronomeModule final : public ModuleNode
+{
+public:
+    juce::String getTypeId() const override { return "Metronome"; }
+    juce::String getDisplayName() const override { return "Metronome"; }
+    juce::Colour getNodeColour() const override { return juce::Colour(0xfffb7185); }
+
+    std::vector<PortInfo> getInputPorts() const override
+    {
+        return {
+            { "Rate In", PortKind::modulation }
+        };
+    }
+
+    std::vector<PortInfo> getOutputPorts() const override
+    {
+        return {
+            { "Trigger", PortKind::modulation },
+            { "Gate", PortKind::modulation },
+            { "Phase", PortKind::modulation }
+        };
+    }
+
+    std::vector<NodeParameterSpec> getParameterSpecs() const override
+    {
+        return {
+            { "rateHz", "Rate", 0.05f, 32.0f, 1.0f },
+            { "pulseWidth", "Pulse Width", 0.01f, 0.5f, 0.08f }
+        };
+    }
+
+    void prepare(double newSampleRate, int) override
+    {
+        sampleRate = juce::jmax(1.0, newSampleRate);
+        phase = 0.0;
+        gateCounterSamples = 0;
+    }
+
+    void process(NodeRenderContext& context) override
+    {
+        auto trigger = 0.0f;
+        const auto rateIn = ! context.modInputs.empty() ? static_cast<double>(context.modInputs[0]) : 0.0;
+        const auto effectiveRate = juce::jlimit(0.05, 32.0, rateIn > 0.0 ? rateIn : static_cast<double>(rateHz));
+        const auto phaseAdvance = effectiveRate / juce::jmax(1.0, context.sampleRate);
+        const auto pulseSamples = juce::jmax(1, static_cast<int>(std::round((1.0 / effectiveRate) * static_cast<double>(context.sampleRate) * pulseWidth)));
+
+        for (int sample = 0; sample < context.numSamples; ++sample)
+        {
+            phase += phaseAdvance;
+
+            if (phase >= 1.0)
+            {
+                phase -= std::floor(phase);
+                trigger = 1.0f;
+                gateCounterSamples = pulseSamples;
+            }
+        }
+
+        if (gateCounterSamples > 0)
+            gateCounterSamples = juce::jmax(0, gateCounterSamples - context.numSamples);
+
+        if (context.modOutputs.size() > 0)
+            context.modOutputs[0] = trigger;
+        if (context.modOutputs.size() > 1)
+            context.modOutputs[1] = gateCounterSamples > 0 ? 1.0f : 0.0f;
+        if (context.modOutputs.size() > 2)
+            context.modOutputs[2] = static_cast<float>(phase);
+    }
+
+    float getParameterValue(const juce::String& parameterId) const override
+    {
+        if (parameterId == "rateHz")
+            return rateHz;
+        if (parameterId == "pulseWidth")
+            return pulseWidth;
+        return 0.0f;
+    }
+
+    void setParameterValue(const juce::String& parameterId, float newValue) override
+    {
+        if (parameterId == "rateHz")
+            rateHz = juce::jlimit(0.05f, 32.0f, newValue);
+        else if (parameterId == "pulseWidth")
+            pulseWidth = juce::jlimit(0.01f, 0.5f, newValue);
+    }
+
+private:
+    double sampleRate = 44100.0;
+    double phase = 0.0;
+    int gateCounterSamples = 0;
+    float rateHz = 1.0f;
+    float pulseWidth = 0.08f;
+};
+
 class BpmToLfoModule final : public ModuleNode
 {
 public:
@@ -373,6 +467,67 @@ private:
     float numerator = 4.0f;
     float denominator = 4.0f;
     float barPhase = 0.0f;
+};
+
+class ComparatorModule final : public ModuleNode
+{
+public:
+    juce::String getTypeId() const override { return "Comparator"; }
+    juce::String getDisplayName() const override { return "Comparator"; }
+    juce::Colour getNodeColour() const override { return juce::Colour(0xffa78bfa); }
+
+    std::vector<PortInfo> getInputPorts() const override
+    {
+        return {
+            { "Signal", PortKind::modulation },
+            { "Threshold In", PortKind::modulation }
+        };
+    }
+
+    std::vector<PortInfo> getOutputPorts() const override
+    {
+        return {
+            { "Gate", PortKind::modulation },
+            { "Trigger", PortKind::modulation }
+        };
+    }
+
+    std::vector<NodeParameterSpec> getParameterSpecs() const override
+    {
+        return {
+            { "threshold", "Threshold", -1.0f, 1.0f, 0.0f }
+        };
+    }
+
+    void process(NodeRenderContext& context) override
+    {
+        const auto signal = ! context.modInputs.empty() ? context.modInputs[0] : 0.0f;
+        const auto thresholdIn = context.modInputs.size() > 1 ? context.modInputs[1] : threshold;
+        const auto currentHigh = signal >= thresholdIn;
+        const auto trigger = currentHigh && ! lastHigh ? 1.0f : 0.0f;
+
+        if (context.modOutputs.size() > 0)
+            context.modOutputs[0] = currentHigh ? 1.0f : 0.0f;
+        if (context.modOutputs.size() > 1)
+            context.modOutputs[1] = trigger;
+
+        lastHigh = currentHigh;
+    }
+
+    float getParameterValue(const juce::String& parameterId) const override
+    {
+        return parameterId == "threshold" ? threshold : 0.0f;
+    }
+
+    void setParameterValue(const juce::String& parameterId, float newValue) override
+    {
+        if (parameterId == "threshold")
+            threshold = juce::jlimit(-1.0f, 1.0f, newValue);
+    }
+
+private:
+    float threshold = 0.0f;
+    bool lastHigh = false;
 };
 
 class AdEnvelopeModule final : public ModuleNode
@@ -2203,9 +2358,19 @@ std::unique_ptr<ModuleNode> createLfoModule()
     return std::make_unique<LfoModule>();
 }
 
+std::unique_ptr<ModuleNode> createMetronomeModule()
+{
+    return std::make_unique<MetronomeModule>();
+}
+
 std::unique_ptr<ModuleNode> createBpmToLfoModule()
 {
     return std::make_unique<BpmToLfoModule>();
+}
+
+std::unique_ptr<ModuleNode> createComparatorModule()
+{
+    return std::make_unique<ComparatorModule>();
 }
 
 std::unique_ptr<ModuleNode> createTimeSignatureModule()
