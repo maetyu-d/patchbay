@@ -655,16 +655,16 @@ void MainComponent::autoWireTrackNode(const juce::Uuid& trackId, bool isMidiTrac
         return;
 
     if (const auto lfo = findNodeOfType(nodes, "LFO"))
-        graph.connect({ lfo->id, false, 2, PortKind::modulation }, { trackId, true, 1, PortKind::modulation });
+        graph.connect({ lfo->id, false, 2, PortKind::modulation }, { trackId, true, 2, PortKind::modulation });
 
     if (const auto timeSignature = findNodeOfType(nodes, "TimeSignature"))
     {
-        graph.connect({ timeSignature->id, false, 2, PortKind::modulation }, { trackId, true, 2, PortKind::modulation });
-        graph.connect({ timeSignature->id, false, isMidiTrack ? 0 : 1, PortKind::modulation }, { trackId, true, 0, PortKind::modulation });
+        graph.connect({ timeSignature->id, false, 2, PortKind::modulation }, { trackId, true, 3, PortKind::modulation });
+        graph.connect({ timeSignature->id, false, isMidiTrack ? 0 : 1, PortKind::modulation }, { trackId, true, 1, PortKind::modulation });
     }
     else if (const auto bpmToLfo = findNodeOfType(nodes, "BpmToLfo"))
     {
-        graph.connect({ bpmToLfo->id, false, 0, PortKind::modulation }, { trackId, true, 0, PortKind::modulation });
+        graph.connect({ bpmToLfo->id, false, 0, PortKind::modulation }, { trackId, true, 1, PortKind::modulation });
     }
 
     if (const auto sum = findNodeOfType(nodes, "Sum"))
@@ -694,9 +694,26 @@ void MainComponent::showTrackInspector(const NodeSnapshot& track)
     inspectorTitle.setText(track.name, juce::dontSendNotification);
     loadTrackClipButton.setVisible(track.trackTypeId == "audio");
     trackMuteToggle.setVisible(true);
+    auto* loopToggle = new juce::ToggleButton("Loop");
+    loopToggle->setVisible(true);
+    loopToggle->onClick = [this, id = track.id, loopToggle]
+    {
+        graph.setNodeParameter(id, "looping", loopToggle->getToggleState() ? 1.0f : 0.0f);
+    };
+    addAndMakeVisible(loopToggle);
+    inspectorToggleButtons.add(loopToggle);
+
     for (const auto& parameter : track.parameters)
+    {
         if (parameter.spec.id == "mute")
+        {
             trackMuteToggle.setToggleState(parameter.value > 0.5f, juce::dontSendNotification);
+        }
+        else if (parameter.spec.id == "looping")
+        {
+            loopToggle->setToggleState(parameter.value > 0.5f, juce::dontSendNotification);
+        }
+    }
 
     auto addSlider = [this](const juce::String& name,
                             double min,
@@ -725,6 +742,8 @@ void MainComponent::showTrackInspector(const NodeSnapshot& track)
             continue;
 
         if (parameter.spec.id == "mute")
+            continue;
+        if (parameter.spec.id == "looping")
             continue;
 
         addSlider(parameter.spec.name,

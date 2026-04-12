@@ -4,10 +4,14 @@
 
 namespace
 {
-constexpr auto nodeWidth = 210;
+constexpr auto nodeWidth = 218;
 constexpr auto portHeight = 24;
-constexpr auto titleHeight = 34;
+constexpr auto titleHeight = 48;
 constexpr auto socketSize = 18;
+constexpr auto horizontalPadding = 14;
+constexpr auto socketInset = 8;
+constexpr auto socketTextGap = 8;
+constexpr auto titleBottomGap = 8;
 constexpr auto cableHitThickness = 12.0f;
 constexpr auto minZoom = 0.5f;
 constexpr auto maxZoom = 2.5f;
@@ -133,36 +137,38 @@ public:
         g.setColour(juce::Colours::white);
         g.setFont(juce::FontOptions(18.0f * zoomScale, juce::Font::bold));
         g.drawText(node.name,
-                   scaled(14),
-                   scaled(8),
-                   getWidth() - scaled(28),
-                   scaled(20),
+                   scaled(horizontalPadding),
+                   scaled(10),
+                   getWidth() - scaled(horizontalPadding * 2),
+                   scaled(26),
                    juce::Justification::centredLeft);
 
         g.setFont(juce::FontOptions(11.5f * zoomScale));
         g.setColour(juce::Colour(0xff8c9aab));
 
-        auto y = scaled(titleHeight);
+        const auto inputTextX = scaled(socketInset + socketSize + socketTextGap);
+        const auto outputTextWidth = getWidth() / 2 - scaled(socketInset + socketSize + socketTextGap + horizontalPadding);
+        auto y = scaled(titleHeight + titleBottomGap);
 
         for (const auto& port : node.inputs)
         {
             g.drawText(port.name,
-                       scaled(18),
+                       inputTextX,
                        y,
-                       getWidth() / 2 - scaled(22),
+                       getWidth() / 2 - inputTextX - scaled(10),
                        scaled(portHeight),
                        juce::Justification::centredLeft);
             y += scaled(portHeight);
         }
 
-        y = scaled(titleHeight);
+        y = scaled(titleHeight + titleBottomGap);
 
         for (const auto& port : node.outputs)
         {
             g.drawText(port.name,
                        getWidth() / 2,
                        y,
-                       getWidth() / 2 - scaled(18),
+                       outputTextWidth,
                        scaled(portHeight),
                        juce::Justification::centredRight);
             y += scaled(portHeight);
@@ -172,19 +178,19 @@ public:
 
     void resized() override
     {
-        auto y = scaled(titleHeight) + scaled(4);
+        auto y = scaled(titleHeight + titleBottomGap) + scaled(2);
 
         for (auto* socket : inputSockets)
         {
-            socket->setBounds(scaled(4), y - scaled(1), scaled(socketSize), scaled(socketSize));
+            socket->setBounds(scaled(socketInset), y - scaled(1), scaled(socketSize), scaled(socketSize));
             y += scaled(portHeight);
         }
 
-        y = scaled(titleHeight) + scaled(4);
+        y = scaled(titleHeight + titleBottomGap) + scaled(2);
 
         for (auto* socket : outputSockets)
         {
-            socket->setBounds(getWidth() - scaled(socketSize) - scaled(4),
+            socket->setBounds(getWidth() - scaled(socketSize) - scaled(socketInset),
                               y - scaled(1),
                               scaled(socketSize),
                               scaled(socketSize));
