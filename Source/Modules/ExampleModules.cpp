@@ -3,8 +3,6 @@
 
 namespace
 {
-constexpr double bpm = 120.0;
-
 class AudioTrackEditorComponent;
 class MidiTrackEditorComponent;
 
@@ -35,6 +33,22 @@ float midiToFrequency(int midiNote)
 double msToSamples(double sampleRate, float milliseconds)
 {
     return juce::jmax(1.0, sampleRate * static_cast<double>(juce::jmax(1.0f, milliseconds)) * 0.001);
+}
+
+float computePeakLevel(const juce::AudioBuffer<float>& buffer, int channel)
+{
+    if (! juce::isPositiveAndBelow(channel, buffer.getNumChannels()) || buffer.getNumSamples() <= 0)
+        return 0.0f;
+
+    return buffer.getMagnitude(channel, 0, buffer.getNumSamples());
+}
+
+void updateStereoMeter(const juce::AudioBuffer<float>& buffer, juce::Point<float>& meter)
+{
+    const auto left = computePeakLevel(buffer, 0);
+    const auto right = computePeakLevel(buffer, juce::jmin(1, buffer.getNumChannels() - 1));
+    meter.x = juce::jmax(left, meter.x * 0.84f);
+    meter.y = juce::jmax(right, meter.y * 0.84f);
 }
 
 juce::String encodeAudioBuffer(const juce::AudioBuffer<float>& buffer, double sampleRate)
@@ -1305,6 +1319,7 @@ public:
     std::vector<PortInfo> getInputPorts() const override
     {
         return {
+            { "Audio In", PortKind::audio },
             { "Play", PortKind::modulation },
             { "Speed", PortKind::modulation },
             { "Loop Start", PortKind::modulation },
@@ -1325,6 +1340,10 @@ public:
             { "volume", "Volume", 0.0f, 1.5f, 0.8f },
             { "pan", "Pan", -1.0f, 1.0f, 0.0f },
             { "mute", "Mute", 0.0f, 1.0f, 0.0f },
+            { "solo", "Solo", 0.0f, 1.0f, 0.0f },
+            { "arm", "Arm", 0.0f, 1.0f, 0.0f },
+            { "monitor", "Monitor", 0.0f, 1.0f, 1.0f },
+            { "sync", "Sync", 0.0f, 1.0f, 1.0f },
             { "looping", "Loop", 0.0f, 1.0f, 0.0f },
             { "startPoint", "Start", 0.0f, 0.99f, 0.0f },
             { "endPoint", "End", 0.01f, 1.0f, 1.0f },
@@ -1340,6 +1359,13 @@ public:
         if (! context.modOutputs.empty())
             context.modOutputs[0] = 0.0f;
 
+        meterLevels.x *= 0.82f;
+        meterLevels.y *= 0.82f;
+
+        const auto shouldMuteForSolo = context.anySoloActive && ! context.nodeSoloed;
+        if (mute > 0.5f || shouldMuteForSolo)
+            return;
+
         const auto playTriggerHigh = ! context.modInputs.empty() && context.modInputs[0] > 0.5f;
         if (playTriggerHigh && ! lastPlayTriggerHigh)
         {
@@ -1349,13 +1375,9 @@ public:
         }
         lastPlayTriggerHigh = playTriggerHigh;
 
-        if (! context.isPlaying || mute > 0.5f || audioClip.getNumSamples() == 0 || ! isRunning)
-            return;
-
+        const auto inputBuffer = context.audioInputs.empty() ? nullptr : context.audioInputs.front();
         const auto rateControl = context.modInputs.size() < 2 || context.modInputs[1] <= 0.0f ? 1.0 : static_cast<double>(context.modInputs[1]);
         const auto playbackRate = juce::jlimit(0.125, 4.0, rateControl);
-        lastTransportSamplePosition = static_cast<int64_t>(std::llround(playbackSamplePosition));
-        lastPlaybackRate = playbackRate;
         const auto ratio = (audioClipSampleRate / context.sampleRate) * playbackRate;
         auto effectiveLoopStart = loopStart;
         auto effectiveLoopEnd = loopEnd;
@@ -1372,6 +1394,47 @@ public:
         lastLoopStart = effectiveLoopStart;
         lastLoopEnd = effectiveLoopEnd;
 
+        if (arm > 0.5f && context.isRecording && context.isPlaying && inputBuffer != nullptr)
+        {
+            if (! lastRecordState)
+            {
+                filePath.clear();
+            }
+
+            audioClipSampleRate = context.sampleRate;
+            const auto writeOffset = juce::jmax<int>(0, static_cast<int>(context.transportSamplePosition));
+            const auto requiredSamples = writeOffset + context.numSamples;
+            const auto currentChannels = juce::jmax(2, inputBuffer->getNumChannels());
+
+            if (audioClip.getNumChannels() != currentChannels || audioClip.getNumSamples() < requiredSamples)
+            {
+                juce::AudioBuffer<float> extended(currentChannels, requiredSamples);
+                extended.clear();
+                if (audioClip.getNumSamples() > 0)
+                    for (int channel = 0; channel < juce::jmin(currentChannels, audioClip.getNumChannels()); ++channel)
+                        extended.copyFrom(channel, 0, audioClip, channel, 0, audioClip.getNumSamples());
+                audioClip = std::move(extended);
+            }
+
+            for (int channel = 0; channel < juce::jmin(audioClip.getNumChannels(), inputBuffer->getNumChannels()); ++channel)
+                audioClip.copyFrom(channel, writeOffset, *inputBuffer, channel, 0, context.numSamples);
+
+            if (monitor > 0.5f)
+                for (int channel = 0; channel < juce::jmin(output->getNumChannels(), inputBuffer->getNumChannels()); ++channel)
+                    output->addFrom(channel, 0, *inputBuffer, channel, 0, context.numSamples);
+        }
+
+        lastRecordState = context.isRecording;
+
+        const auto useTransportSync = sync > 0.5f;
+        const auto shouldRenderClip = audioClip.getNumSamples() > 0 && context.isPlaying && (useTransportSync || isRunning);
+
+        if (! shouldRenderClip)
+        {
+            updateStereoMeter(*output, meterLevels);
+            return;
+        }
+
         const auto loopStartSample = static_cast<int>(std::floor(effectiveLoopStart * static_cast<float>(audioClip.getNumSamples() - 1)));
         const auto loopEndSample = juce::jlimit(loopStartSample + 1, audioClip.getNumSamples(), static_cast<int>(std::ceil(effectiveLoopEnd * static_cast<float>(audioClip.getNumSamples()))));
         const auto loopLength = juce::jmax(1, loopEndSample - loopStartSample);
@@ -1379,9 +1442,19 @@ public:
         const auto rightGain = volume * juce::jlimit(0.0f, 1.0f, 1.0f + juce::jmin(0.0f, pan));
         auto reachedEndThisBlock = false;
 
+        if (useTransportSync)
+        {
+            playbackSamplePosition = static_cast<double>(context.transportSamplePosition) * ratio;
+            isRunning = context.isPlaying;
+        }
+
+        lastTransportSamplePosition = useTransportSync ? context.transportSamplePosition
+                                                      : static_cast<int64_t>(std::llround(playbackSamplePosition));
+        lastPlaybackRate = playbackRate;
+
         for (int sample = 0; sample < context.numSamples; ++sample)
         {
-            if (! isRunning)
+            if (! isRunning && ! useTransportSync)
                 break;
 
             auto clipPosition = static_cast<double>(loopStartSample) + playbackSamplePosition;
@@ -1397,7 +1470,8 @@ public:
             }
             else if (clipPosition >= static_cast<double>(loopEndSample))
             {
-                isRunning = false;
+                if (! useTransportSync)
+                    isRunning = false;
                 reachedEndThisBlock = true;
                 break;
             }
@@ -1414,7 +1488,10 @@ public:
             if (output->getNumChannels() > 1)
                 output->addSample(1, sample, right * rightGain);
 
-            playbackSamplePosition += ratio;
+            if (useTransportSync)
+                playbackSamplePosition += ratio;
+            else
+                playbackSamplePosition += ratio;
         }
 
         if (reachedEndThisBlock && ! emittedEndTrigger && ! context.modOutputs.empty())
@@ -1423,6 +1500,8 @@ public:
         emittedEndTrigger = reachedEndThisBlock && looping <= 0.5f;
         if (looping > 0.5f)
             emittedEndTrigger = false;
+
+        updateStereoMeter(*output, meterLevels);
     }
 
     float getParameterValue(const juce::String& parameterId) const override
@@ -1430,6 +1509,10 @@ public:
         if (parameterId == "volume") return volume;
         if (parameterId == "pan") return pan;
         if (parameterId == "mute") return mute;
+        if (parameterId == "solo") return solo;
+        if (parameterId == "arm") return arm;
+        if (parameterId == "monitor") return monitor;
+        if (parameterId == "sync") return sync;
         if (parameterId == "looping") return looping;
         if (parameterId == "startPoint") return startPoint;
         if (parameterId == "endPoint") return endPoint;
@@ -1443,6 +1526,10 @@ public:
         if (parameterId == "volume") volume = juce::jlimit(0.0f, 1.5f, newValue);
         else if (parameterId == "pan") pan = juce::jlimit(-1.0f, 1.0f, newValue);
         else if (parameterId == "mute") mute = juce::jlimit(0.0f, 1.0f, newValue);
+        else if (parameterId == "solo") solo = newValue > 0.5f ? 1.0f : 0.0f;
+        else if (parameterId == "arm") arm = newValue > 0.5f ? 1.0f : 0.0f;
+        else if (parameterId == "monitor") monitor = newValue > 0.5f ? 1.0f : 0.0f;
+        else if (parameterId == "sync") sync = newValue > 0.5f ? 1.0f : 0.0f;
         else if (parameterId == "looping") looping = newValue > 0.5f ? 1.0f : 0.0f;
         else if (parameterId == "startPoint") startPoint = juce::jlimit(0.0f, 0.99f, newValue);
         else if (parameterId == "endPoint") endPoint = juce::jlimit(0.01f, 1.0f, newValue);
@@ -1456,6 +1543,8 @@ public:
     bool isTrackModule() const override { return true; }
     juce::String getTrackTypeId() const override { return "audio"; }
     juce::String getResourcePath() const override { return filePath; }
+    bool isSoloed() const override { return solo > 0.5f; }
+    juce::Point<float> getMeterLevels() const override { return meterLevels; }
 
     bool loadFile(const juce::File& file) override
     {
@@ -1571,6 +1660,10 @@ private:
     float volume = 0.8f;
     float pan = 0.0f;
     float mute = 0.0f;
+    float solo = 0.0f;
+    float arm = 0.0f;
+    float monitor = 1.0f;
+    float sync = 1.0f;
     float looping = 0.0f;
     float startPoint = 0.0f;
     float endPoint = 1.0f;
@@ -1587,6 +1680,8 @@ private:
     bool isRunning = false;
     bool lastPlayTriggerHigh = false;
     bool emittedEndTrigger = false;
+    bool lastRecordState = false;
+    juce::Point<float> meterLevels;
     std::unique_ptr<juce::Component> editorComponent;
 };
 
@@ -1602,6 +1697,8 @@ public:
     std::vector<PortInfo> getInputPorts() const override
     {
         return {
+            { "Gate In", PortKind::modulation },
+            { "Pitch In", PortKind::modulation },
             { "Play", PortKind::modulation },
             { "Speed", PortKind::modulation },
             { "Loop Start", PortKind::modulation },
@@ -1622,6 +1719,9 @@ public:
             { "volume", "Volume", 0.0f, 1.5f, 0.8f },
             { "pan", "Pan", -1.0f, 1.0f, 0.0f },
             { "mute", "Mute", 0.0f, 1.0f, 0.0f },
+            { "solo", "Solo", 0.0f, 1.0f, 0.0f },
+            { "arm", "Arm", 0.0f, 1.0f, 0.0f },
+            { "sync", "Sync", 0.0f, 1.0f, 1.0f },
             { "looping", "Loop", 0.0f, 1.0f, 0.0f },
             { "rootNote", "Root Note", 36.0f, 84.0f, 60.0f },
             { "gain", "MIDI Gain", 0.0f, 1.0f, 0.2f },
@@ -1643,8 +1743,16 @@ public:
         output->clear();
         if (! context.modOutputs.empty())
             context.modOutputs[0] = 0.0f;
+        meterLevels.x *= 0.82f;
+        meterLevels.y *= 0.82f;
 
-        const auto playTriggerHigh = ! context.modInputs.empty() && context.modInputs[0] > 0.5f;
+        const auto shouldMuteForSolo = context.anySoloActive && ! context.nodeSoloed;
+        if (mute > 0.5f || shouldMuteForSolo)
+            return;
+
+        const auto gateInput = context.modInputs.size() > 0 ? context.modInputs[0] : 0.0f;
+        const auto pitchInput = context.modInputs.size() > 1 ? context.modInputs[1] : 0.0f;
+        const auto playTriggerHigh = context.modInputs.size() > 2 && context.modInputs[2] > 0.5f;
         if (playTriggerHigh && ! lastPlayTriggerHigh)
         {
             isRunning = true;
@@ -1654,19 +1762,17 @@ public:
         }
         lastPlayTriggerHigh = playTriggerHigh;
 
-        if (! context.isPlaying || mute > 0.5f || ! isRunning)
-            return;
-
-        const auto samplesPerBeat = context.sampleRate * 60.0 / bpm;
-        const auto rateControl = context.modInputs.size() < 2 || context.modInputs[1] <= 0.0f ? 1.0 : static_cast<double>(context.modInputs[1]);
+        const auto useTransportSync = sync > 0.5f;
+        const auto samplesPerBeat = context.sampleRate * 60.0 / juce::jmax(1.0, context.bpm);
+        const auto rateControl = context.modInputs.size() < 4 || context.modInputs[3] <= 0.0f ? 1.0 : static_cast<double>(context.modInputs[3]);
         const auto playbackRate = juce::jlimit(0.125, 4.0, rateControl);
         auto effectiveLoopStart = loopStart;
         auto effectiveLoopEnd = loopEnd;
         std::tie(startPoint, endPoint) = normaliseLoopPoints(startPoint, endPoint);
-        if (context.modInputs.size() > 2)
-            effectiveLoopStart = modToUnitRange(context.modInputs[2]);
-        if (context.modInputs.size() > 3)
-            effectiveLoopEnd = modToUnitRange(context.modInputs[3]);
+        if (context.modInputs.size() > 4)
+            effectiveLoopStart = modToUnitRange(context.modInputs[4]);
+        if (context.modInputs.size() > 5)
+            effectiveLoopEnd = modToUnitRange(context.modInputs[5]);
         std::tie(effectiveLoopStart, effectiveLoopEnd) = normaliseLoopPoints(effectiveLoopStart, effectiveLoopEnd);
         effectiveLoopStart = juce::jlimit(startPoint, juce::jmax(startPoint, endPoint - 0.01f), effectiveLoopStart);
         effectiveLoopEnd = juce::jlimit(effectiveLoopStart + 0.01f, endPoint, effectiveLoopEnd);
@@ -1682,13 +1788,45 @@ public:
         const auto loopLengthSamples = samplesPerStep * loopStepCount;
         const auto leftGain = volume * juce::jlimit(0.0f, 1.0f, 1.0f - juce::jmax(0.0f, pan));
         const auto rightGain = volume * juce::jlimit(0.0f, 1.0f, 1.0f + juce::jmin(0.0f, pan));
-        lastTransportSamplePosition = static_cast<int64_t>(std::llround(playbackSamplePosition));
+        lastTransportSamplePosition = useTransportSync ? context.transportSamplePosition
+                                                      : static_cast<int64_t>(std::llround(playbackSamplePosition));
         lastPlaybackRate = playbackRate;
         auto reachedEndThisBlock = false;
 
+        if (arm > 0.5f && context.isRecording && context.isPlaying)
+        {
+            const auto recordGateHigh = gateInput > 0.5f;
+            if (recordGateHigh && ! lastRecordGateHigh)
+            {
+                const auto regionProgress = std::fmod(static_cast<double>(juce::jmax<int64_t>(0, context.transportSamplePosition)), juce::jmax(1.0, loopLengthSamples));
+                const auto stepWithinLoop = juce::jlimit(0, loopStepCount - 1, static_cast<int>(regionProgress / juce::jmax(1.0, samplesPerStep)));
+                const auto recordStep = juce::jlimit(0, static_cast<int>(steps.size()) - 1, loopStartIndex + stepWithinLoop);
+                const auto incomingMidi = juce::jlimit(36, 84, static_cast<int>(std::round(static_cast<float>(rootNote) + pitchInput * 12.0f)));
+                steps[static_cast<size_t>(recordStep)] = true;
+                noteOffsets[static_cast<size_t>(recordStep)] = juce::jlimit(-24, 24, incomingMidi - rootNote);
+            }
+            lastRecordGateHigh = recordGateHigh;
+        }
+        else
+        {
+            lastRecordGateHigh = false;
+        }
+
+        if (useTransportSync)
+        {
+            playbackSamplePosition = static_cast<double>(context.transportSamplePosition);
+            isRunning = context.isPlaying;
+        }
+
+        if (! context.isPlaying || (! useTransportSync && ! isRunning))
+        {
+            updateStereoMeter(*output, meterLevels);
+            return;
+        }
+
         for (int sample = 0; sample < context.numSamples; ++sample)
         {
-            if (! isRunning)
+            if (! isRunning && ! useTransportSync)
                 break;
 
             auto localPlaybackPosition = playbackSamplePosition;
@@ -1704,7 +1842,8 @@ public:
             }
             else if (localPlaybackPosition >= loopLengthSamples)
             {
-                isRunning = false;
+                if (! useTransportSync)
+                    isRunning = false;
                 reachedEndThisBlock = true;
                 break;
             }
@@ -1740,6 +1879,8 @@ public:
         emittedEndTrigger = reachedEndThisBlock && looping <= 0.5f;
         if (looping > 0.5f)
             emittedEndTrigger = false;
+
+        updateStereoMeter(*output, meterLevels);
     }
 
     float getParameterValue(const juce::String& parameterId) const override
@@ -1747,6 +1888,9 @@ public:
         if (parameterId == "volume") return volume;
         if (parameterId == "pan") return pan;
         if (parameterId == "mute") return mute;
+        if (parameterId == "solo") return solo;
+        if (parameterId == "arm") return arm;
+        if (parameterId == "sync") return sync;
         if (parameterId == "looping") return looping;
         if (parameterId == "rootNote") return static_cast<float>(rootNote);
         if (parameterId == "gain") return gain;
@@ -1768,6 +1912,9 @@ public:
         if (parameterId == "volume") volume = juce::jlimit(0.0f, 1.5f, newValue);
         else if (parameterId == "pan") pan = juce::jlimit(-1.0f, 1.0f, newValue);
         else if (parameterId == "mute") mute = juce::jlimit(0.0f, 1.0f, newValue);
+        else if (parameterId == "solo") solo = newValue > 0.5f ? 1.0f : 0.0f;
+        else if (parameterId == "arm") arm = newValue > 0.5f ? 1.0f : 0.0f;
+        else if (parameterId == "sync") sync = newValue > 0.5f ? 1.0f : 0.0f;
         else if (parameterId == "looping") looping = newValue > 0.5f ? 1.0f : 0.0f;
         else if (parameterId == "rootNote") rootNote = juce::jlimit(36, 84, static_cast<int>(std::round(newValue)));
         else if (parameterId == "gain") gain = juce::jlimit(0.0f, 1.0f, newValue);
@@ -1788,6 +1935,8 @@ public:
 
     bool isTrackModule() const override { return true; }
     juce::String getTrackTypeId() const override { return "midi"; }
+    bool isSoloed() const override { return solo > 0.5f; }
+    juce::Point<float> getMeterLevels() const override { return meterLevels; }
 
     juce::ValueTree saveState() const override
     {
@@ -1871,6 +2020,9 @@ private:
     float volume = 0.8f;
     float pan = 0.0f;
     float mute = 0.0f;
+    float solo = 0.0f;
+    float arm = 0.0f;
+    float sync = 1.0f;
     float looping = 0.0f;
     int rootNote = 60;
     float gain = 0.2f;
@@ -1889,7 +2041,9 @@ private:
     double playbackSamplePosition = 0.0;
     bool isRunning = false;
     bool lastPlayTriggerHigh = false;
+    bool lastRecordGateHigh = false;
     bool emittedEndTrigger = false;
+    juce::Point<float> meterLevels;
     std::unique_ptr<juce::Component> editorComponent;
 };
 

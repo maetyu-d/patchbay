@@ -53,6 +53,8 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     styleButton(saveButton, juce::Colour(0xff2b3a4f));
     styleButton(loadButton, juce::Colour(0xff2b3a4f));
     styleButton(transportButton, juce::Colour(0xff355c50));
+    styleButton(playButton, juce::Colour(0xff35576d));
+    styleButton(recordButton, juce::Colour(0xff7a2f35));
     styleButton(rewindButton, juce::Colour(0xff60483b));
     styleButton(addAudioTrackButton, juce::Colour(0xff35576d));
     styleButton(addMidiTrackButton, juce::Colour(0xff5b4d74));
@@ -65,6 +67,8 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     saveButton.onClick = [this] { saveSession(); };
     loadButton.onClick = [this] { loadSession(); };
     transportButton.onClick = [this] { toggleEditMode(); };
+    playButton.onClick = [this] { togglePlayback(); };
+    recordButton.onClick = [this] { toggleRecording(); };
     rewindButton.onClick = [this] { rewindTransport(); };
     addAudioTrackButton.onClick = [this] { addAudioTrack(); };
     addMidiTrackButton.onClick = [this] { addMidiTrack(); };
@@ -80,11 +84,17 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     addAndMakeVisible(saveButton);
     addAndMakeVisible(loadButton);
     addAndMakeVisible(transportButton);
+    addAndMakeVisible(playButton);
+    addAndMakeVisible(recordButton);
     addAndMakeVisible(rewindButton);
     addAndMakeVisible(addAudioTrackButton);
     addAndMakeVisible(addMidiTrackButton);
     addAndMakeVisible(scanPluginsButton);
     addAndMakeVisible(toggleInspectorButton);
+    addAndMakeVisible(transportPositionLabel);
+    addAndMakeVisible(bpmLabel);
+    addAndMakeVisible(bpmSlider);
+    addAndMakeVisible(transportLoopToggle);
     addAndMakeVisible(hintLabel);
     addAndMakeVisible(trackView);
     addAndMakeVisible(canvas);
@@ -95,6 +105,16 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
 
     hintLabel.setText("Right-click to add a node.", juce::dontSendNotification);
     hintLabel.setColour(juce::Label::textColourId, juce::Colour(0xff9fadb9));
+    transportPositionLabel.setColour(juce::Label::textColourId, juce::Colours::white);
+    transportPositionLabel.setJustificationType(juce::Justification::centredLeft);
+    bpmLabel.setText("BPM", juce::dontSendNotification);
+    bpmLabel.setColour(juce::Label::textColourId, juce::Colour(0xffdbe3ec));
+    bpmSlider.setRange(30.0, 240.0, 0.1);
+    bpmSlider.setSkewFactorFromMidPoint(120.0);
+    bpmSlider.setValue(graph.getTransportState().bpm, juce::dontSendNotification);
+    bpmSlider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 54, 20);
+    bpmSlider.onValueChange = [this] { graph.setTransportBpm(bpmSlider.getValue()); };
+    transportLoopToggle.onClick = [this] { graph.setTransportLoopEnabled(transportLoopToggle.getToggleState()); };
     inspectorTitle.setText("Inspect", juce::dontSendNotification);
     inspectorTitle.setColour(juce::Label::textColourId, juce::Colours::white);
     inspectorTitle.setFont(juce::FontOptions(18.0f, juce::Font::bold));
@@ -143,6 +163,7 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     setSize(1500, 940);
     editMode = true;
     applyModeState();
+    startTimerHz(24);
 }
 
 MainComponent::~MainComponent()
@@ -180,11 +201,17 @@ void MainComponent::resized()
     saveButton.setBounds(toolbar.removeFromLeft(80).reduced(4));
     loadButton.setBounds(toolbar.removeFromLeft(80).reduced(4));
     transportButton.setBounds(toolbar.removeFromLeft(80).reduced(4));
+    playButton.setBounds(toolbar.removeFromLeft(72).reduced(4));
+    recordButton.setBounds(toolbar.removeFromLeft(68).reduced(4));
     rewindButton.setBounds(toolbar.removeFromLeft(88).reduced(4));
     addAudioTrackButton.setBounds(toolbar.removeFromLeft(96).reduced(4));
     addMidiTrackButton.setBounds(toolbar.removeFromLeft(90).reduced(4));
     scanPluginsButton.setBounds(toolbar.removeFromLeft(104).reduced(4));
     toggleInspectorButton.setBounds(toolbar.removeFromLeft(128).reduced(4));
+    transportLoopToggle.setBounds(toolbar.removeFromLeft(64).reduced(4));
+    bpmLabel.setBounds(toolbar.removeFromLeft(38).reduced(4));
+    bpmSlider.setBounds(toolbar.removeFromLeft(180).reduced(4));
+    transportPositionLabel.setBounds(toolbar.removeFromLeft(160).reduced(4));
 
     const auto activeInspectorWidth = inspectorCollapsed ? 0 : inspectorPanelWidth;
     auto inspector = bounds.removeFromRight(activeInspectorWidth);
@@ -276,6 +303,22 @@ void MainComponent::paint(juce::Graphics& g)
     }
     g.fillRoundedRectangle(bounds.removeFromTop(static_cast<float>(trackAreaHeight)), 14.0f);
 
+}
+
+void MainComponent::timerCallback()
+{
+    const auto transport = graph.getTransportState();
+    const auto beatsPerBar = static_cast<double>(transport.numerator) * (4.0 / static_cast<double>(juce::jmax(1, transport.denominator)));
+    const auto samplesPerBeat = (60.0 / juce::jmax(1.0, transport.bpm)) * transport.sampleRate;
+    const auto totalBeats = samplesPerBeat > 0.0 ? static_cast<double>(transport.transportSamplePosition) / samplesPerBeat : 0.0;
+    const auto bar = static_cast<int>(std::floor(totalBeats / juce::jmax(0.25, beatsPerBar))) + 1;
+    const auto beat = static_cast<int>(std::floor(std::fmod(totalBeats, juce::jmax(0.25, beatsPerBar)))) + 1;
+    transportPositionLabel.setText("Bar " + juce::String(bar) + "  Beat " + juce::String(beat), juce::dontSendNotification);
+    bpmSlider.setValue(transport.bpm, juce::dontSendNotification);
+    transportLoopToggle.setToggleState(transport.loopEnabled, juce::dontSendNotification);
+    playButton.setButtonText(transport.isPlaying ? "Stop" : "Play");
+    recordButton.setButtonText(transport.isRecording ? "Rec On" : "Rec");
+    recordButton.setColour(juce::TextButton::buttonColourId, transport.isRecording ? juce::Colour(0xffc2414b) : juce::Colour(0xff7a2f35));
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -427,11 +470,18 @@ void MainComponent::addMidiTrack()
     rebuildInspector();
 }
 
-void MainComponent::toggleTransport()
+void MainComponent::togglePlayback()
 {
     const auto shouldPlay = ! graph.isPlaying();
     graph.setPlaying(shouldPlay);
-    transportButton.setButtonText(shouldPlay ? "Stop" : "Play");
+}
+
+void MainComponent::toggleRecording()
+{
+    if (editMode)
+        toggleEditMode();
+
+    graph.setRecording(! graph.isRecording());
 }
 
 void MainComponent::rewindTransport()
@@ -655,16 +705,16 @@ void MainComponent::autoWireTrackNode(const juce::Uuid& trackId, bool isMidiTrac
         return;
 
     if (const auto lfo = findNodeOfType(nodes, "LFO"))
-        graph.connect({ lfo->id, false, 2, PortKind::modulation }, { trackId, true, 2, PortKind::modulation });
+        graph.connect({ lfo->id, false, 2, PortKind::modulation }, { trackId, true, isMidiTrack ? 4 : 2, PortKind::modulation });
 
     if (const auto timeSignature = findNodeOfType(nodes, "TimeSignature"))
     {
-        graph.connect({ timeSignature->id, false, 2, PortKind::modulation }, { trackId, true, 3, PortKind::modulation });
-        graph.connect({ timeSignature->id, false, isMidiTrack ? 0 : 1, PortKind::modulation }, { trackId, true, 1, PortKind::modulation });
+        graph.connect({ timeSignature->id, false, 2, PortKind::modulation }, { trackId, true, isMidiTrack ? 5 : 3, PortKind::modulation });
+        graph.connect({ timeSignature->id, false, isMidiTrack ? 0 : 1, PortKind::modulation }, { trackId, true, isMidiTrack ? 3 : 1, PortKind::modulation });
     }
     else if (const auto bpmToLfo = findNodeOfType(nodes, "BpmToLfo"))
     {
-        graph.connect({ bpmToLfo->id, false, 0, PortKind::modulation }, { trackId, true, 1, PortKind::modulation });
+        graph.connect({ bpmToLfo->id, false, 0, PortKind::modulation }, { trackId, true, isMidiTrack ? 3 : 1, PortKind::modulation });
     }
 
     if (const auto sum = findNodeOfType(nodes, "Sum"))
@@ -695,13 +745,46 @@ void MainComponent::showTrackInspector(const NodeSnapshot& track)
     loadTrackClipButton.setVisible(track.trackTypeId == "audio");
     trackMuteToggle.setVisible(true);
     auto* loopToggle = new juce::ToggleButton("Loop");
+    auto* soloToggle = new juce::ToggleButton("Solo");
+    auto* armToggle = new juce::ToggleButton("Arm");
+    auto* syncToggle = new juce::ToggleButton("Sync");
     loopToggle->setVisible(true);
     loopToggle->onClick = [this, id = track.id, loopToggle]
     {
         graph.setNodeParameter(id, "looping", loopToggle->getToggleState() ? 1.0f : 0.0f);
     };
+    soloToggle->onClick = [this, id = track.id, soloToggle]
+    {
+        graph.setNodeParameter(id, "solo", soloToggle->getToggleState() ? 1.0f : 0.0f);
+    };
+    armToggle->onClick = [this, id = track.id, armToggle]
+    {
+        graph.setNodeParameter(id, "arm", armToggle->getToggleState() ? 1.0f : 0.0f);
+    };
+    syncToggle->onClick = [this, id = track.id, syncToggle]
+    {
+        graph.setNodeParameter(id, "sync", syncToggle->getToggleState() ? 1.0f : 0.0f);
+    };
     addAndMakeVisible(loopToggle);
+    addAndMakeVisible(soloToggle);
+    addAndMakeVisible(armToggle);
+    addAndMakeVisible(syncToggle);
     inspectorToggleButtons.add(loopToggle);
+    inspectorToggleButtons.add(soloToggle);
+    inspectorToggleButtons.add(armToggle);
+    inspectorToggleButtons.add(syncToggle);
+
+    juce::ToggleButton* monitorToggle = nullptr;
+    if (track.trackTypeId == "audio")
+    {
+        monitorToggle = new juce::ToggleButton("Monitor");
+        monitorToggle->onClick = [this, id = track.id, monitorToggle]
+        {
+            graph.setNodeParameter(id, "monitor", monitorToggle->getToggleState() ? 1.0f : 0.0f);
+        };
+        addAndMakeVisible(monitorToggle);
+        inspectorToggleButtons.add(monitorToggle);
+    }
 
     for (const auto& parameter : track.parameters)
     {
@@ -712,6 +795,22 @@ void MainComponent::showTrackInspector(const NodeSnapshot& track)
         else if (parameter.spec.id == "looping")
         {
             loopToggle->setToggleState(parameter.value > 0.5f, juce::dontSendNotification);
+        }
+        else if (parameter.spec.id == "solo")
+        {
+            soloToggle->setToggleState(parameter.value > 0.5f, juce::dontSendNotification);
+        }
+        else if (parameter.spec.id == "arm")
+        {
+            armToggle->setToggleState(parameter.value > 0.5f, juce::dontSendNotification);
+        }
+        else if (parameter.spec.id == "sync")
+        {
+            syncToggle->setToggleState(parameter.value > 0.5f, juce::dontSendNotification);
+        }
+        else if (parameter.spec.id == "monitor" && monitorToggle != nullptr)
+        {
+            monitorToggle->setToggleState(parameter.value > 0.5f, juce::dontSendNotification);
         }
     }
 
@@ -742,6 +841,14 @@ void MainComponent::showTrackInspector(const NodeSnapshot& track)
             continue;
 
         if (parameter.spec.id == "mute")
+            continue;
+        if (parameter.spec.id == "solo")
+            continue;
+        if (parameter.spec.id == "arm")
+            continue;
+        if (parameter.spec.id == "sync")
+            continue;
+        if (parameter.spec.id == "monitor")
             continue;
         if (parameter.spec.id == "looping")
             continue;
@@ -803,11 +910,21 @@ void MainComponent::toggleEditMode()
 
 void MainComponent::applyModeState()
 {
-    graph.setPlaying(! editMode);
+    if (editMode)
+    {
+        graph.setRecording(false);
+        graph.setPlaying(false);
+    }
+
     canvas.setEditMode(editMode);
-    transportButton.setButtonText(editMode ? "Edit" : "Play");
+    transportButton.setButtonText(editMode ? "Edit" : "Perform");
+    playButton.setEnabled(! editMode);
+    recordButton.setEnabled(! editMode);
+    rewindButton.setEnabled(! editMode);
+    transportLoopToggle.setEnabled(! editMode);
+    bpmSlider.setEnabled(! editMode);
     hintLabel.setText(editMode
-                          ? "Edit mode. Cmd+E plays."
-                          : "Playing. Cmd+E edits.",
+                          ? "Edit mode. Cmd+E switches to performance."
+                          : "Performance mode. Use Play and Rec. Cmd+E returns to edit.",
                       juce::dontSendNotification);
 }

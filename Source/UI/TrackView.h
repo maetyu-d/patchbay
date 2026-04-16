@@ -5,7 +5,8 @@
 #include <optional>
 
 class TrackView final : public juce::Component,
-                        private juce::ChangeListener
+                        private juce::ChangeListener,
+                        private juce::Timer
 {
 public:
     explicit TrackView(PatchGraph& graphToView);
@@ -20,6 +21,7 @@ public:
 
 private:
     void changeListenerCallback(juce::ChangeBroadcaster* source) override;
+    void timerCallback() override;
     int getRowAtY(int y) const;
 
     PatchGraph& graph;

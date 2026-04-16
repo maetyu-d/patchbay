@@ -16,6 +16,12 @@ bool areSocketsCompatible(const SocketRef& source, const SocketRef& destination)
         && source.portIndex >= 0
         && destination.portIndex >= 0;
 }
+
+double samplesPerBar(double sampleRate, double bpm, int numerator, int denominator)
+{
+    const auto beatsPerBar = static_cast<double>(numerator) * (4.0 / static_cast<double>(juce::jmax(1, denominator)));
+    return (60.0 / juce::jmax(1.0, bpm)) * sampleRate * beatsPerBar;
+}
 } // namespace
 
 juce::Uuid PatchGraph::addNode(std::unique_ptr<ModuleNode> node, juce::Point<float> position)
@@ -150,7 +156,8 @@ std::vector<NodeSnapshot> PatchGraph::getNodes() const
             entry->node->supportsEmbeddedEditor(),
             entry->node->isEditorOpen(),
             entry->node->isEditorDetached(),
-            entry->node->getEditorScale()
+            entry->node->getEditorScale(),
+            entry->node->getMeterLevels()
         });
     }
 
@@ -305,6 +312,12 @@ juce::ValueTree PatchGraph::createState() const
     const juce::ScopedLock lock(graphLock);
     juce::ValueTree state("PATCH_GRAPH");
     state.setProperty("playing", playing, nullptr);
+    state.setProperty("bpm", transportBpm, nullptr);
+    state.setProperty("numerator", transportNumerator, nullptr);
+    state.setProperty("denominator", transportDenominator, nullptr);
+    state.setProperty("loopEnabled", transportLoopEnabled, nullptr);
+    state.setProperty("loopStartBar", transportLoopStartBar, nullptr);
+    state.setProperty("loopEndBar", transportLoopEndBar, nullptr);
 
     for (auto* entry : nodes)
     {
@@ -339,7 +352,14 @@ void PatchGraph::loadState(const juce::ValueTree& state)
     connections.clear();
     runtimeStates.clear();
     playing = static_cast<bool>(state.getProperty("playing", true));
+    recording = false;
     transportSamplePosition = 0;
+    transportBpm = static_cast<double>(state.getProperty("bpm", 120.0));
+    transportNumerator = static_cast<int>(state.getProperty("numerator", 4));
+    transportDenominator = static_cast<int>(state.getProperty("denominator", 4));
+    transportLoopEnabled = static_cast<bool>(state.getProperty("loopEnabled", false));
+    transportLoopStartBar = static_cast<int>(state.getProperty("loopStartBar", 1));
+    transportLoopEndBar = static_cast<int>(state.getProperty("loopEndBar", 5));
 
     for (const auto& child : state)
     {
@@ -393,6 +413,14 @@ void PatchGraph::render(juce::AudioBuffer<float>& outputBuffer)
     outputBuffer.clear();
 
     const auto renderOrder = buildRenderOrder();
+    const auto anySoloActive = std::any_of(renderOrder.begin(), renderOrder.end(),
+                                           [](const auto* entry)
+                                           {
+                                               return entry->node->isSoloed();
+                                           });
+    const auto barLengthSamples = samplesPerBar(currentSampleRate, transportBpm, transportNumerator, transportDenominator);
+    const auto loopStartSample = static_cast<int64_t>(std::llround(static_cast<double>(juce::jmax(0, transportLoopStartBar - 1)) * barLengthSamples));
+    const auto loopEndSample = static_cast<int64_t>(std::llround(static_cast<double>(juce::jmax(transportLoopStartBar, transportLoopEndBar) - 1) * barLengthSamples));
 
     for (const auto* entry : renderOrder)
     {
@@ -447,7 +475,16 @@ void PatchGraph::render(juce::AudioBuffer<float>& outputBuffer)
         context.modInputs = runtime.modInputs;
         context.modOutputs = runtime.modOutputs;
         context.isPlaying = playing;
+        context.isRecording = recording;
         context.transportSamplePosition = transportSamplePosition;
+        context.bpm = transportBpm;
+        context.transportNumerator = transportNumerator;
+        context.transportDenominator = transportDenominator;
+        context.transportLooping = transportLoopEnabled;
+        context.transportLoopStartSample = loopStartSample;
+        context.transportLoopEndSample = loopEndSample;
+        context.anySoloActive = anySoloActive;
+        context.nodeSoloed = entry->node->isSoloed();
 
         for (auto& buffer : runtime.audioInputs)
             context.audioInputs.push_back(&buffer);
@@ -469,7 +506,16 @@ void PatchGraph::render(juce::AudioBuffer<float>& outputBuffer)
     }
 
     if (playing)
+    {
         transportSamplePosition += outputBuffer.getNumSamples();
+
+        if (transportLoopEnabled && loopEndSample > loopStartSample && transportSamplePosition >= loopEndSample)
+        {
+            const auto loopLength = juce::jmax<int64_t>(1, loopEndSample - loopStartSample);
+            while (transportSamplePosition >= loopEndSample)
+                transportSamplePosition -= loopLength;
+        }
+    }
 }
 
 PatchGraph::RuntimeState& PatchGraph::getOrCreateRuntimeState(const NodeEntry& entry, int blockSize)
@@ -617,6 +663,10 @@ void PatchGraph::setPlaying(bool shouldPlay)
 {
     const juce::ScopedLock lock(graphLock);
     playing = shouldPlay;
+
+    if (! playing)
+        recording = false;
+
     sendChangeMessage();
 }
 
@@ -626,9 +676,71 @@ bool PatchGraph::isPlaying() const
     return playing;
 }
 
+void PatchGraph::setRecording(bool shouldRecord)
+{
+    const juce::ScopedLock lock(graphLock);
+    recording = shouldRecord;
+
+    if (recording)
+        playing = true;
+
+    sendChangeMessage();
+}
+
+bool PatchGraph::isRecording() const
+{
+    const juce::ScopedLock lock(graphLock);
+    return recording;
+}
+
 void PatchGraph::resetTransport()
 {
     const juce::ScopedLock lock(graphLock);
     transportSamplePosition = 0;
     sendChangeMessage();
+}
+
+void PatchGraph::setTransportBpm(double newBpm)
+{
+    const juce::ScopedLock lock(graphLock);
+    transportBpm = juce::jlimit(30.0, 240.0, newBpm);
+    sendChangeMessage();
+}
+
+void PatchGraph::setTransportTimeSignature(int numerator, int denominator)
+{
+    const juce::ScopedLock lock(graphLock);
+    transportNumerator = juce::jlimit(1, 12, numerator);
+    transportDenominator = juce::jlimit(2, 16, denominator);
+    sendChangeMessage();
+}
+
+void PatchGraph::setTransportLoopEnabled(bool shouldLoop)
+{
+    const juce::ScopedLock lock(graphLock);
+    transportLoopEnabled = shouldLoop;
+    sendChangeMessage();
+}
+
+void PatchGraph::setTransportLoopBars(int startBar, int endBar)
+{
+    const juce::ScopedLock lock(graphLock);
+    transportLoopStartBar = juce::jmax(1, startBar);
+    transportLoopEndBar = juce::jmax(transportLoopStartBar + 1, endBar);
+    sendChangeMessage();
+}
+
+TransportState PatchGraph::getTransportState() const
+{
+    const juce::ScopedLock lock(graphLock);
+    return { playing,
+             recording,
+             transportBpm,
+             transportNumerator,
+             transportDenominator,
+             transportLoopEnabled,
+             transportLoopStartBar,
+             transportLoopEndBar,
+             currentSampleRate,
+             transportSamplePosition };
 }

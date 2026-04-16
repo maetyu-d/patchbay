@@ -36,6 +36,21 @@ struct NodeSnapshot
     bool editorOpen = false;
     bool editorDetached = false;
     float editorScale = 1.0f;
+    juce::Point<float> meterLevels;
+};
+
+struct TransportState
+{
+    bool isPlaying = false;
+    bool isRecording = false;
+    double bpm = 120.0;
+    int numerator = 4;
+    int denominator = 4;
+    bool loopEnabled = false;
+    int loopStartBar = 1;
+    int loopEndBar = 5;
+    double sampleRate = 44100.0;
+    int64_t transportSamplePosition = 0;
 };
 
 class PatchGraph final : public juce::ChangeBroadcaster
@@ -68,7 +83,14 @@ public:
     void render(juce::AudioBuffer<float>& outputBuffer);
     void setPlaying(bool shouldPlay);
     bool isPlaying() const;
+    void setRecording(bool shouldRecord);
+    bool isRecording() const;
     void resetTransport();
+    void setTransportBpm(double newBpm);
+    void setTransportTimeSignature(int numerator, int denominator);
+    void setTransportLoopEnabled(bool shouldLoop);
+    void setTransportLoopBars(int startBar, int endBar);
+    TransportState getTransportState() const;
 
 private:
     struct NodeEntry
@@ -100,5 +122,12 @@ private:
     double currentSampleRate = 44100.0;
     int currentBlockSize = 512;
     bool playing = true;
+    bool recording = false;
     int64 transportSamplePosition = 0;
+    double transportBpm = 120.0;
+    int transportNumerator = 4;
+    int transportDenominator = 4;
+    bool transportLoopEnabled = false;
+    int transportLoopStartBar = 1;
+    int transportLoopEndBar = 5;
 };

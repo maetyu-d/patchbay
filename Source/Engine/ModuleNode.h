@@ -38,7 +38,16 @@ struct NodeRenderContext
     double sampleRate = 44100.0;
     int numSamples = 0;
     bool isPlaying = true;
+    bool isRecording = false;
     int64_t transportSamplePosition = 0;
+    double bpm = 120.0;
+    int transportNumerator = 4;
+    int transportDenominator = 4;
+    bool transportLooping = false;
+    int64_t transportLoopStartSample = 0;
+    int64_t transportLoopEndSample = 0;
+    bool anySoloActive = false;
+    bool nodeSoloed = false;
 };
 
 class ModuleNode
@@ -81,6 +90,16 @@ public:
     virtual bool contributesToMasterOutput() const
     {
         return false;
+    }
+
+    virtual bool isSoloed() const
+    {
+        return false;
+    }
+
+    virtual juce::Point<float> getMeterLevels() const
+    {
+        return {};
     }
 
     virtual bool isTrackModule() const

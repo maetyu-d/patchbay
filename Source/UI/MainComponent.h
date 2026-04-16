@@ -50,7 +50,8 @@ public:
     }
 };
 
-class MainComponent final : public juce::AudioAppComponent
+class MainComponent final : public juce::AudioAppComponent,
+                            private juce::Timer
 {
 public:
     MainComponent();
@@ -68,6 +69,7 @@ public:
     void mouseUp(const juce::MouseEvent& event) override;
 
 private:
+    void timerCallback() override;
     void addModule(const juce::String& type, juce::Point<float> position);
     void scanExternalPlugins();
     void seedDefaultSession();
@@ -75,7 +77,8 @@ private:
     void loadSession();
     void addAudioTrack();
     void addMidiTrack();
-    void toggleTransport();
+    void togglePlayback();
+    void toggleRecording();
     void rewindTransport();
     void loadAudioIntoSelectedTrack();
     void rebuildInspector();
@@ -94,6 +97,8 @@ private:
     juce::TextButton saveButton { "Save" };
     juce::TextButton loadButton { "Open" };
     juce::TextButton transportButton { "Edit" };
+    juce::TextButton playButton { "Play" };
+    juce::TextButton recordButton { "Rec" };
     juce::TextButton rewindButton { "Rewind" };
     juce::TextButton addAudioTrackButton { "Audio" };
     juce::TextButton addMidiTrackButton { "MIDI" };
@@ -101,6 +106,10 @@ private:
     juce::TextButton toggleInspectorButton { "Hide" };
     juce::TextButton loadTrackClipButton { "Load" };
     juce::ToggleButton trackMuteToggle { "Mute" };
+    juce::Label transportPositionLabel;
+    juce::Label bpmLabel;
+    juce::Slider bpmSlider;
+    juce::ToggleButton transportLoopToggle { "Loop" };
     InspectorResizeHandle inspectorResizeHandle;
     juce::Label hintLabel;
     juce::Label inspectorTitle;
