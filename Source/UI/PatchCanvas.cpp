@@ -363,6 +363,11 @@ void PatchCanvas::clearSelection()
     setSelectedNode(std::nullopt);
 }
 
+void PatchCanvas::closeDetachedEditors()
+{
+    detachedEditors.clear();
+}
+
 void PatchCanvas::paint(juce::Graphics& g)
 {
     g.fillAll(juce::Colour(0xff131720));
@@ -385,6 +390,24 @@ void PatchCanvas::paint(juce::Graphics& g)
         g.strokePath(cable, juce::PathStrokeType(isSelected ? 5.0f : 3.5f,
                                                  juce::PathStrokeType::curved,
                                                  juce::PathStrokeType::rounded));
+
+        const auto isHovered = hoveredConnection.has_value() && connectionsMatch(*hoveredConnection, connection);
+        if (isSelected || isHovered)
+        {
+            const auto source = getSocketCanvasPosition(connection.source);
+            const auto destination = getSocketCanvasPosition(connection.destination);
+            auto badge = juce::Rectangle<float>::leftTopRightBottom((source.x + destination.x) * 0.5f - 150.0f,
+                                                                    (source.y + destination.y) * 0.5f - 14.0f,
+                                                                    (source.x + destination.x) * 0.5f + 150.0f,
+                                                                    (source.y + destination.y) * 0.5f + 14.0f);
+            badge = badge.withPosition({ juce::jlimit(8.0f, static_cast<float>(getWidth()) - badge.getWidth() - 8.0f, badge.getX()),
+                                         juce::jlimit(8.0f, static_cast<float>(getHeight()) - badge.getHeight() - 8.0f, badge.getY()) });
+            g.setColour(juce::Colour(0xee111722));
+            g.fillRoundedRectangle(badge, 8.0f);
+            g.setColour(juce::Colour(0xffdbe3ec));
+            g.setFont(juce::FontOptions(12.5f, juce::Font::bold));
+            g.drawText(describeConnection(connection), badge, juce::Justification::centred);
+        }
     }
 
     if (pendingSocket.has_value())
@@ -398,6 +421,19 @@ void PatchCanvas::paint(juce::Graphics& g)
 
         g.setColour(colourForPortKind(pendingSocket->kind).withAlpha(0.5f));
         g.strokePath(cable, juce::PathStrokeType(2.0f));
+    }
+}
+
+void PatchCanvas::mouseMove(const juce::MouseEvent& event)
+{
+    auto newHover = findConnectionAt(event.position);
+    const auto changed = newHover.has_value() != hoveredConnection.has_value()
+        || (newHover.has_value() && hoveredConnection.has_value() && ! connectionsMatch(*newHover, *hoveredConnection));
+
+    if (changed)
+    {
+        hoveredConnection = std::move(newHover);
+        repaint();
     }
 }
 
@@ -444,24 +480,43 @@ void PatchCanvas::mouseUp(const juce::MouseEvent& event)
     juce::PopupMenu menu;
     auto itemId = 1;
     const auto menuPosition = event.getPosition().toFloat();
+    juce::StringArray orderedTypes;
 
-    for (const auto& type : NodeFactory::getAvailableTypes())
-        menu.addItem(itemId++, type);
+    for (const auto& section : NodeFactory::getMenuSections())
+    {
+        juce::PopupMenu submenu;
+
+        for (const auto& type : section.types)
+        {
+            submenu.addItem(itemId++, NodeFactory::getDisplayNameForType(type));
+            orderedTypes.add(type);
+        }
+
+        menu.addSubMenu(section.title, submenu);
+    }
 
     const auto popupArea = juce::Rectangle<int>(event.getScreenPosition().x, event.getScreenPosition().y, 1, 1);
 
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea(popupArea),
-                       [this, menuPosition](int result)
+                       [this, menuPosition, orderedTypes](int result)
                        {
                            if (result <= 0)
                                return;
 
-                           const auto types = NodeFactory::getAvailableTypes();
                            const auto index = result - 1;
 
-                           if (juce::isPositiveAndBelow(index, types.size()))
-                               onCreateNode(types[index], screenToWorld(menuPosition));
+                           if (juce::isPositiveAndBelow(index, orderedTypes.size()))
+                               onCreateNode(orderedTypes[index], screenToWorld(menuPosition));
                        });
+}
+
+void PatchCanvas::mouseExit(const juce::MouseEvent&)
+{
+    if (hoveredConnection.has_value())
+    {
+        hoveredConnection.reset();
+        repaint();
+    }
 }
 
 bool PatchCanvas::keyPressed(const juce::KeyPress& key)
@@ -681,6 +736,26 @@ void PatchCanvas::openDetachedEditorForNode(const juce::Uuid& nodeId)
 
     graph.setNodeEditorOpen(nodeId, true);
     graph.setNodeEditorDetached(nodeId, true);
+}
+
+juce::String PatchCanvas::describeConnection(const GraphConnection& connection) const
+{
+    const auto sourceNode = graph.getNode(connection.source.nodeId);
+    const auto destinationNode = graph.getNode(connection.destination.nodeId);
+
+    if (! sourceNode.has_value() || ! destinationNode.has_value())
+        return {};
+
+    const auto sourcePorts = sourceNode->outputs;
+    const auto destinationPorts = destinationNode->inputs;
+    const auto sourceName = juce::isPositiveAndBelow(connection.source.portIndex, static_cast<int>(sourcePorts.size()))
+        ? sourcePorts[static_cast<size_t>(connection.source.portIndex)].name
+        : juce::String("Out");
+    const auto destinationName = juce::isPositiveAndBelow(connection.destination.portIndex, static_cast<int>(destinationPorts.size()))
+        ? destinationPorts[static_cast<size_t>(connection.destination.portIndex)].name
+        : juce::String("In");
+
+    return sourceNode->name + " / " + sourceName + " -> " + destinationNode->name + " / " + destinationName;
 }
 
 juce::Path PatchCanvas::createCablePath(const GraphConnection& connection) const

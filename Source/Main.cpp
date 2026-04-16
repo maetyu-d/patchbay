@@ -24,6 +24,14 @@ public:
         mainWindow.reset();
     }
 
+    void systemRequestedQuit() override
+    {
+        if (mainWindow != nullptr)
+            mainWindow->closeButtonPressed();
+        else if (auto* manager = juce::MessageManager::getInstanceWithoutCreating())
+            manager->stopDispatchLoop();
+    }
+
 private:
     std::unique_ptr<MainWindow> mainWindow;
 };

@@ -34,6 +34,7 @@ juce::Uuid PatchGraph::addNode(std::unique_ptr<ModuleNode> node, juce::Point<flo
     auto* entry = new NodeEntry();
     entry->id = juce::Uuid();
     entry->typeId = node->getTypeId();
+    entry->displayName = makeUniqueNodeName(NodeFactory::getDisplayNameForType(entry->typeId));
     entry->position = position;
     entry->node = std::move(node);
     entry->node->prepare(currentSampleRate, currentBlockSize);
@@ -141,7 +142,7 @@ std::vector<NodeSnapshot> PatchGraph::getNodes() const
         snapshots.push_back({
             entry->id,
             entry->typeId,
-            entry->node->getDisplayName(),
+            entry->displayName,
             entry->node->getNodeColour(),
             entry->position,
             entry->node->getInputPorts(),
@@ -426,6 +427,7 @@ juce::ValueTree PatchGraph::createStateUnlocked() const
         juce::ValueTree node("NODE");
         node.setProperty("id", entry->id.toString(), nullptr);
         node.setProperty("type", entry->typeId, nullptr);
+        node.setProperty("name", entry->displayName, nullptr);
         node.setProperty("x", entry->position.x, nullptr);
         node.setProperty("y", entry->position.y, nullptr);
         node.appendChild(entry->node->saveState(), nullptr);
@@ -479,6 +481,7 @@ void PatchGraph::restoreFromState(const juce::ValueTree& state)
             auto* entry = new NodeEntry();
             entry->id = juce::Uuid(child.getProperty("id").toString());
             entry->typeId = child.getProperty("type").toString();
+            entry->displayName = child.getProperty("name", NodeFactory::getDisplayNameForType(entry->typeId)).toString();
             entry->position = { static_cast<float>(child.getProperty("x")), static_cast<float>(child.getProperty("y")) };
             entry->node = std::move(node);
             entry->node->prepare(currentSampleRate, currentBlockSize);
@@ -672,6 +675,28 @@ const PatchGraph::NodeEntry* PatchGraph::findNode(const juce::Uuid& nodeId) cons
     }
 
     return nullptr;
+}
+
+juce::String PatchGraph::makeUniqueNodeName(const juce::String& baseName) const
+{
+    int highestIndex = 0;
+
+    for (auto* node : nodes)
+    {
+        if (node->displayName == baseName)
+        {
+            highestIndex = juce::jmax(highestIndex, 1);
+            continue;
+        }
+
+        if (! node->displayName.startsWith(baseName + " "))
+            continue;
+
+        const auto suffix = node->displayName.fromFirstOccurrenceOf(baseName + " ", false, false).trim();
+        highestIndex = juce::jmax(highestIndex, suffix.getIntValue());
+    }
+
+    return highestIndex <= 0 ? baseName + " 1" : baseName + " " + juce::String(highestIndex + 1);
 }
 
 void PatchGraph::pruneInvalidConnectionsForNode(const juce::Uuid& nodeId)

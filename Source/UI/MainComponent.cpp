@@ -40,6 +40,82 @@ std::optional<int> findFirstFreeInputPort(const NodeSnapshot& node,
 
     return std::nullopt;
 }
+
+bool isEssentialNodeParameter(const juce::String& typeId, const juce::String& parameterId)
+{
+    if (typeId == "Oscillator") return parameterId == "frequency" || parameterId == "level";
+    if (typeId == "LFO") return parameterId == "rate" || parameterId == "depth";
+    if (typeId == "Filter") return parameterId == "mode" || parameterId == "cutoff" || parameterId == "resonance";
+    if (typeId == "Gain") return parameterId == "gain";
+    if (typeId == "Output") return parameterId == "trim" || parameterId == "ceiling";
+    if (typeId == "Sum") return parameterId == "channels" || parameterId == "trim";
+    if (typeId == "Router") return parameterId == "destinations" || parameterId == "activeRoute";
+    if (typeId == "TimeSignature") return parameterId == "numerator" || parameterId == "denominator";
+    if (typeId == "BpmToLfo") return parameterId == "bpm";
+    if (typeId == "AD") return parameterId == "attack" || parameterId == "decay";
+    if (typeId == "ADSR") return parameterId == "attack" || parameterId == "decay" || parameterId == "sustain" || parameterId == "release";
+    if (typeId == "ChannelStrip") return parameterId == "gain" || parameterId == "pan" || parameterId == "send";
+    if (typeId == "Send") return parameterId == "amount";
+    if (typeId == "Return") return parameterId == "level";
+    if (typeId == "Bus") return parameterId == "channels" || parameterId == "trim";
+    return false;
+}
+
+bool isEssentialTrackParameter(const juce::String& trackTypeId, const juce::String& parameterId)
+{
+    if (parameterId == "volume" || parameterId == "pan" || parameterId == "clipStartBar" || parameterId == "clipBars")
+        return true;
+
+    if (trackTypeId == "audio")
+        return parameterId == "startPoint" || parameterId == "endPoint" || parameterId == "fadeIn" || parameterId == "fadeOut";
+
+    if (trackTypeId == "midi")
+        return parameterId == "rootNote" || parameterId == "gain" || parameterId == "startPoint" || parameterId == "endPoint";
+
+    return false;
+}
+
+enum class ThreeWayDialogChoice
+{
+    first,
+    second,
+    third
+};
+
+ThreeWayDialogChoice mapYesNoCancelResult(int result)
+{
+    const auto usesNativeAlerts = juce::LookAndFeel::getDefaultLookAndFeel().isUsingNativeAlertWindows();
+
+    if (usesNativeAlerts)
+    {
+        if (result == 0) return ThreeWayDialogChoice::first;
+        if (result == 1) return ThreeWayDialogChoice::second;
+        return ThreeWayDialogChoice::third;
+    }
+
+    if (result == 1) return ThreeWayDialogChoice::first;
+    if (result == 2) return ThreeWayDialogChoice::second;
+    return ThreeWayDialogChoice::third;
+}
+
+ThreeWayDialogChoice showMappedYesNoCancelBox(juce::MessageBoxIconType iconType,
+                                              const juce::String& title,
+                                              const juce::String& message,
+                                              const juce::String& firstButton,
+                                              const juce::String& secondButton,
+                                              const juce::String& thirdButton,
+                                              juce::Component* associatedComponent)
+{
+    const auto result = juce::AlertWindow::showYesNoCancelBox(iconType,
+                                                              title,
+                                                              message,
+                                                              firstButton,
+                                                              secondButton,
+                                                              thirdButton,
+                                                              associatedComponent,
+                                                              nullptr);
+    return mapYesNoCancelResult(result);
+}
 }
 
 MainComponent::MainComponent() : canvas(graph), trackView(graph)
@@ -57,10 +133,9 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     styleButton(playButton, juce::Colour(0xff35576d));
     styleButton(recordButton, juce::Colour(0xff7a2f35));
     styleButton(rewindButton, juce::Colour(0xff60483b));
-    styleButton(addAudioTrackButton, juce::Colour(0xff35576d));
-    styleButton(addMidiTrackButton, juce::Colour(0xff5b4d74));
     styleButton(scanPluginsButton, juce::Colour(0xff41644a));
     styleButton(toggleInspectorButton, juce::Colour(0xff4c5368));
+    styleButton(inspectorDetailButton, juce::Colour(0xff2b3a4f));
     styleButton(loadTrackClipButton, juce::Colour(0xff35576d));
 
     externalPluginManager.initialise();
@@ -77,10 +152,13 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     playButton.onClick = [this] { togglePlayback(); };
     recordButton.onClick = [this] { toggleRecording(); };
     rewindButton.onClick = [this] { rewindTransport(); };
-    addAudioTrackButton.onClick = [this] { addAudioTrack(); };
-    addMidiTrackButton.onClick = [this] { addMidiTrack(); };
     scanPluginsButton.onClick = [this] { scanExternalPlugins(); };
     toggleInspectorButton.onClick = [this] { toggleInspectorCollapsed(); };
+    inspectorDetailButton.onClick = [this]
+    {
+        inspectorShowAdvanced = ! inspectorShowAdvanced;
+        rebuildInspector();
+    };
     loadTrackClipButton.onClick = [this] { loadAudioIntoSelectedTrack(); };
     trackMuteToggle.onClick = [this]
     {
@@ -95,10 +173,9 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     addAndMakeVisible(playButton);
     addAndMakeVisible(recordButton);
     addAndMakeVisible(rewindButton);
-    addAndMakeVisible(addAudioTrackButton);
-    addAndMakeVisible(addMidiTrackButton);
     addAndMakeVisible(scanPluginsButton);
     addAndMakeVisible(toggleInspectorButton);
+    addAndMakeVisible(inspectorDetailButton);
     addAndMakeVisible(transportPositionLabel);
     addAndMakeVisible(bpmLabel);
     addAndMakeVisible(bpmSlider);
@@ -111,7 +188,7 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     addAndMakeVisible(loadTrackClipButton);
     addAndMakeVisible(trackMuteToggle);
 
-    hintLabel.setText("Right-click to add a node.", juce::dontSendNotification);
+    hintLabel.setText("Patch mode: right-click to add modules, then drag between sockets to connect them.", juce::dontSendNotification);
     hintLabel.setColour(juce::Label::textColourId, juce::Colour(0xff9fadb9));
     transportPositionLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     transportPositionLabel.setJustificationType(juce::Justification::centredLeft);
@@ -123,7 +200,7 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     bpmSlider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 54, 20);
     bpmSlider.onValueChange = [this] { graph.setTransportBpm(bpmSlider.getValue()); };
     transportLoopToggle.onClick = [this] { graph.setTransportLoopEnabled(transportLoopToggle.getToggleState()); };
-    inspectorTitle.setText("Inspect", juce::dontSendNotification);
+    inspectorTitle.setText("Selection", juce::dontSendNotification);
     inspectorTitle.setColour(juce::Label::textColourId, juce::Colours::white);
     inspectorTitle.setFont(juce::FontOptions(18.0f, juce::Font::bold));
     inspectorResizeHandle.setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
@@ -135,6 +212,7 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     canvas.setSelectionChangedCallback([this](std::optional<juce::Uuid> nodeId)
     {
         selectedNodeId = std::move(nodeId);
+        inspectorShowAdvanced = false;
         if (selectedNodeId.has_value())
         {
             selectedTrackId.reset();
@@ -156,6 +234,7 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     trackView.setSelectionChangedCallback([this](std::optional<juce::Uuid> trackId)
     {
         selectedTrackId = std::move(trackId);
+        inspectorShowAdvanced = false;
         if (selectedTrackId.has_value())
         {
             selectedNodeId.reset();
@@ -211,14 +290,12 @@ void MainComponent::resized()
     newButton.setBounds(toolbar.removeFromLeft(76).reduced(4));
     saveButton.setBounds(toolbar.removeFromLeft(80).reduced(4));
     loadButton.setBounds(toolbar.removeFromLeft(80).reduced(4));
-    transportButton.setBounds(toolbar.removeFromLeft(80).reduced(4));
-    playButton.setBounds(toolbar.removeFromLeft(72).reduced(4));
-    recordButton.setBounds(toolbar.removeFromLeft(68).reduced(4));
+    transportButton.setBounds(toolbar.removeFromLeft(92).reduced(4));
+    playButton.setBounds(toolbar.removeFromLeft(78).reduced(4));
+    recordButton.setBounds(toolbar.removeFromLeft(86).reduced(4));
     rewindButton.setBounds(toolbar.removeFromLeft(88).reduced(4));
-    addAudioTrackButton.setBounds(toolbar.removeFromLeft(96).reduced(4));
-    addMidiTrackButton.setBounds(toolbar.removeFromLeft(90).reduced(4));
-    scanPluginsButton.setBounds(toolbar.removeFromLeft(104).reduced(4));
-    toggleInspectorButton.setBounds(toolbar.removeFromLeft(128).reduced(4));
+    scanPluginsButton.setBounds(toolbar.removeFromLeft(132).reduced(4));
+    toggleInspectorButton.setBounds(toolbar.removeFromLeft(104).reduced(4));
     transportLoopToggle.setBounds(toolbar.removeFromLeft(64).reduced(4));
     bpmLabel.setBounds(toolbar.removeFromLeft(38).reduced(4));
     bpmSlider.setBounds(toolbar.removeFromLeft(180).reduced(4));
@@ -237,6 +314,7 @@ void MainComponent::resized()
 
     const auto inspectorVisible = ! inspectorCollapsed;
     inspectorTitle.setVisible(inspectorVisible);
+    inspectorDetailButton.setVisible(inspectorVisible && inspectorHasAdvanced);
     loadTrackClipButton.setVisible(loadTrackClipButton.isVisible() && inspectorVisible);
     trackMuteToggle.setVisible(trackMuteToggle.isVisible() && inspectorVisible);
     for (auto* combo : inspectorComboBoxes) combo->setVisible(inspectorVisible);
@@ -248,6 +326,7 @@ void MainComponent::resized()
     if (! inspectorVisible)
     {
         inspectorTitle.setBounds({});
+        inspectorDetailButton.setBounds({});
         loadTrackClipButton.setBounds({});
         trackMuteToggle.setBounds({});
         for (auto* combo : inspectorComboBoxes) combo->setBounds({});
@@ -258,7 +337,12 @@ void MainComponent::resized()
         return;
     }
 
-    inspectorTitle.setBounds(inspector.removeFromTop(30));
+    auto inspectorHeader = inspector.removeFromTop(30);
+    inspectorTitle.setBounds(inspectorHeader.removeFromLeft(juce::jmax(120, inspectorHeader.getWidth() - (inspectorHasAdvanced ? 112 : 0))));
+    if (inspectorHasAdvanced)
+        inspectorDetailButton.setBounds(inspectorHeader.reduced(4, 0));
+    else
+        inspectorDetailButton.setBounds({});
     if (loadTrackClipButton.isVisible())
         loadTrackClipButton.setBounds(inspector.removeFromTop(34).reduced(4));
     else
@@ -314,6 +398,23 @@ void MainComponent::paint(juce::Graphics& g)
     }
     g.fillRoundedRectangle(bounds.removeFromTop(static_cast<float>(trackAreaHeight)), 14.0f);
 
+    if (graph.getNodes().empty())
+    {
+        auto emptyState = canvas.getBounds().toFloat().reduced(48.0f);
+        g.setColour(juce::Colours::white.withAlpha(0.96f));
+        g.setFont(juce::FontOptions(28.0f, juce::Font::bold));
+        g.drawText("Start with one module.", emptyState.removeFromTop(38), juce::Justification::centred);
+
+        g.setColour(juce::Colour(0xff9fb0c4));
+        g.setFont(juce::FontOptions(15.0f));
+        g.drawText("Right-click anywhere in the canvas to add tracks, sound sources, effects, or control modules.",
+                   emptyState.removeFromTop(26),
+                   juce::Justification::centred);
+        g.drawText("Tracks are modules too: add an Audio Track or MIDI Track from the same menu.",
+                   emptyState.removeFromTop(24),
+                   juce::Justification::centred);
+    }
+
 }
 
 void MainComponent::timerCallback()
@@ -324,11 +425,11 @@ void MainComponent::timerCallback()
     const auto totalBeats = samplesPerBeat > 0.0 ? static_cast<double>(transport.transportSamplePosition) / samplesPerBeat : 0.0;
     const auto bar = static_cast<int>(std::floor(totalBeats / juce::jmax(0.25, beatsPerBar))) + 1;
     const auto beat = static_cast<int>(std::floor(std::fmod(totalBeats, juce::jmax(0.25, beatsPerBar)))) + 1;
-    transportPositionLabel.setText("Bar " + juce::String(bar) + "  Beat " + juce::String(beat), juce::dontSendNotification);
+    transportPositionLabel.setText(juce::String(bar) + "." + juce::String(beat), juce::dontSendNotification);
     bpmSlider.setValue(transport.bpm, juce::dontSendNotification);
     transportLoopToggle.setToggleState(transport.loopEnabled, juce::dontSendNotification);
-    playButton.setButtonText(transport.isPlaying ? "Stop" : "Play");
-    recordButton.setButtonText(transport.isRecording ? "Rec On" : "Rec");
+    playButton.setButtonText(transport.isPlaying ? "Stop" : "Start");
+    recordButton.setButtonText(transport.isRecording ? "Recording" : "Record");
     recordButton.setColour(juce::TextButton::buttonColourId, transport.isRecording ? juce::Colour(0xffc2414b) : juce::Colour(0xff7a2f35));
 
     if (dirty)
@@ -429,15 +530,16 @@ void MainComponent::scanExternalPlugins()
 {
     juce::String report;
     externalPluginManager.scanForPlugins(report);
-    hintLabel.setText("Plugin scan complete. " + report.replaceCharacters("\n", " "), juce::dontSendNotification);
+    hintLabel.setText("Plug-in scan finished. Add a Plugin module from the canvas menu to use a scanned AU or VST3.", juce::dontSendNotification);
 }
 
 void MainComponent::seedDefaultSession() {}
 
 void MainComponent::newSession()
 {
-    if (! confirmAbandonChanges("Start New Session?",
-                                "The current patch has unsaved changes. Save it, discard it, or cancel creating a new blank session."))
+    if (confirmAbandonChanges("Start New Session?",
+                              "The current patch has unsaved changes. Save it, discard it, or cancel creating a new blank session.")
+        == CloseDecision::cancel)
         return;
 
     juce::ValueTree state("PATCHBAY_SESSION");
@@ -460,19 +562,31 @@ void MainComponent::newSession()
 
 void MainComponent::saveSession()
 {
+    saveSessionAsync({});
+}
+
+void MainComponent::saveSessionAsync(std::function<void(bool)> callback)
+{
     activeFileChooser = std::make_unique<juce::FileChooser>("Save PatchBay session", juce::File(), "*.patchbay", true, false, this);
     activeFileChooser->launchAsync(juce::FileBrowserComponent::saveMode
                                        | juce::FileBrowserComponent::canSelectFiles
                                        | juce::FileBrowserComponent::warnAboutOverwriting,
-                                   [this](const juce::FileChooser& chooser)
+                                   [this, completion = std::move(callback)](const juce::FileChooser& chooser) mutable
                                    {
                                        const auto file = chooser.getResult();
                                        activeFileChooser.reset();
 
                                        if (file == juce::File())
+                                       {
+                                           if (completion)
+                                               completion(false);
                                            return;
+                                       }
 
                                        saveSessionToFile(file);
+
+                                       if (completion)
+                                           completion(! dirty);
                                    });
 }
 
@@ -531,26 +645,6 @@ void MainComponent::loadSessionFromFile(const juce::File& file)
     dirty = false;
     autosaveTickCounter = 0;
     clearAutosaveSnapshot();
-}
-
-void MainComponent::addAudioTrack()
-{
-    selectedTrackId = graph.addNode(NodeFactory::create("AudioTrack"), { 240.0f, 70.0f + static_cast<float>(graph.getNodes().size() * 18) });
-    autoWireTrackNode(*selectedTrackId, false);
-    selectedNodeId.reset();
-    canvas.clearSelection();
-    trackView.setSelectedTrack(selectedTrackId);
-    rebuildInspector();
-}
-
-void MainComponent::addMidiTrack()
-{
-    selectedTrackId = graph.addNode(NodeFactory::create("MidiTrack"), { 240.0f, 240.0f + static_cast<float>(graph.getNodes().size() * 18) });
-    autoWireTrackNode(*selectedTrackId, true);
-    selectedNodeId.reset();
-    canvas.clearSelection();
-    trackView.setSelectedTrack(selectedTrackId);
-    rebuildInspector();
 }
 
 void MainComponent::togglePlayback()
@@ -628,7 +722,7 @@ void MainComponent::rebuildInspector()
     }
     else
     {
-        inspectorTitle.setText("Inspect", juce::dontSendNotification);
+        inspectorTitle.setText("Selection", juce::dontSendNotification);
     }
 
     resized();
@@ -677,59 +771,136 @@ void MainComponent::maybeRestoreAutosave()
     if (! autosaveFile.existsAsFile())
         return;
 
-    const auto result = juce::AlertWindow::showYesNoCancelBox(juce::AlertWindow::QuestionIcon,
-                                                              "Restore Autosave?",
-                                                              "An autosave snapshot was found. Restore it, discard it, or cancel startup changes?",
-                                                              "Restore",
-                                                              "Discard",
-                                                              "Cancel",
-                                                              this,
-                                                              nullptr);
+    const auto choice = showMappedYesNoCancelBox(juce::AlertWindow::QuestionIcon,
+                                                 "Restore Autosave?",
+                                                 "An autosave snapshot was found. Restore it, discard it, or cancel startup changes?",
+                                                 "Restore",
+                                                 "Discard",
+                                                 "Cancel",
+                                                 this);
 
-    if (result == 1)
+    if (choice == ThreeWayDialogChoice::first)
         loadSessionFromFile(autosaveFile);
-    else if (result == 2)
+    else if (choice == ThreeWayDialogChoice::second)
         clearAutosaveSnapshot();
 }
 
-bool MainComponent::attemptWindowClose()
+MainComponent::CloseDecision MainComponent::attemptWindowClose()
 {
-    if (! confirmAbandonChanges("Save Changes?",
-                                "The current patch has unsaved changes."))
-        return false;
+    const auto decision = confirmAbandonChanges("Save Changes?",
+                                                "The current patch has unsaved changes.");
+
+    if (decision == CloseDecision::cancel)
+        return CloseDecision::cancel;
 
     clearAutosaveSnapshot();
-    return true;
+    return decision;
 }
 
-bool MainComponent::confirmAbandonChanges(const juce::String& title, const juce::String& message)
+void MainComponent::attemptWindowCloseAsync(std::function<void(CloseDecision)> callback)
 {
     if (! dirty)
-        return true;
+    {
+        clearAutosaveSnapshot();
+        if (callback)
+            callback(CloseDecision::proceed);
+        return;
+    }
 
-    const auto result = juce::AlertWindow::showYesNoCancelBox(juce::AlertWindow::WarningIcon,
-                                                              title,
-                                                              message,
-                                                              "Save",
-                                                              "Discard",
-                                                              "Cancel",
-                                                              this,
-                                                              nullptr);
+    auto* dialog = new juce::AlertWindow("Save Changes?",
+                                         "The current patch has unsaved changes.",
+                                         juce::AlertWindow::WarningIcon,
+                                         this);
+    dialog->addButton("Save", 1);
+    dialog->addButton("Discard", 2);
+    dialog->addButton("Cancel", 3, juce::KeyPress(juce::KeyPress::escapeKey));
+    dialog->centreAroundComponent(this, 420, 180);
+    dialog->enterModalState(true,
+                            juce::ModalCallbackFunction::create([this, completion = std::move(callback)](int result) mutable
+                            {
+                                if (result == 1)
+                                {
+                                    if (currentSessionFile == juce::File())
+                                    {
+                                        saveSessionAsync([this, saveCompletion = std::move(completion)](bool saved) mutable
+                                        {
+                                            if (! saved)
+                                            {
+                                                if (saveCompletion)
+                                                    saveCompletion(CloseDecision::cancel);
+                                                return;
+                                            }
 
-    if (result == 0)
-        return false;
+                                            clearAutosaveSnapshot();
+                                            if (saveCompletion)
+                                                saveCompletion(CloseDecision::proceed);
+                                        });
+                                        return;
+                                    }
 
-    if (result == 1)
+                                    saveSessionToFile(currentSessionFile);
+                                    if (! dirty)
+                                    {
+                                        clearAutosaveSnapshot();
+                                        if (completion)
+                                            completion(CloseDecision::proceed);
+                                    }
+                                    else if (completion)
+                                    {
+                                        completion(CloseDecision::cancel);
+                                    }
+
+                                    return;
+                                }
+
+                                if (result == 2)
+                                {
+                                    clearAutosaveSnapshot();
+                                    if (completion)
+                                        completion(CloseDecision::discardAndQuit);
+                                    return;
+                                }
+
+                                if (completion)
+                                    completion(CloseDecision::cancel);
+                            }),
+                            true);
+}
+
+void MainComponent::prepareForQuit()
+{
+    stopTimer();
+    canvas.closeDetachedEditors();
+    shutdownAudio();
+}
+
+MainComponent::CloseDecision MainComponent::confirmAbandonChanges(const juce::String& title, const juce::String& message)
+{
+    if (! dirty)
+        return CloseDecision::proceed;
+
+    const auto choice = showMappedYesNoCancelBox(juce::AlertWindow::WarningIcon,
+                                                 title,
+                                                 message,
+                                                 "Save",
+                                                 "Discard",
+                                                 "Cancel",
+                                                 this);
+
+    if (choice == ThreeWayDialogChoice::first)
     {
         if (currentSessionFile == juce::File())
             saveSession();
         else
             saveSessionToFile(currentSessionFile);
 
-        return ! dirty;
+        return dirty ? CloseDecision::cancel : CloseDecision::proceed;
     }
 
-    return true;
+    if (choice == ThreeWayDialogChoice::second)
+        return CloseDecision::discardAndQuit;
+
+    return CloseDecision::cancel;
 }
 
 void MainComponent::clearInspectorControls()
@@ -739,11 +910,13 @@ void MainComponent::clearInspectorControls()
     inspectorSliders.clear();
     inspectorToggleButtons.clear();
     inspectorStepButtons.clear();
+    inspectorHasAdvanced = false;
+    inspectorDetailButton.setVisible(false);
 }
 
 void MainComponent::showNodeInspector(const NodeSnapshot& node)
 {
-    inspectorTitle.setText("Node: " + node.name, juce::dontSendNotification);
+    inspectorTitle.setText(node.name, juce::dontSendNotification);
 
     if (node.typeId == "ExternalPlugin")
     {
@@ -851,7 +1024,23 @@ void MainComponent::showNodeInspector(const NodeSnapshot& node)
         inspectorComboBoxes.add(combo);
     };
 
+    std::vector<NodeParameterState> visibleParameters;
+    visibleParameters.reserve(node.parameters.size());
+
     for (const auto& parameter : node.parameters)
+    {
+        const auto shouldShow = inspectorShowAdvanced
+            || isEssentialNodeParameter(node.typeId, parameter.spec.id)
+            || (visibleParameters.size() < (node.typeId == "ExternalPlugin" ? 6 : 4));
+
+        if (shouldShow)
+            visibleParameters.push_back(parameter);
+    }
+
+    inspectorHasAdvanced = visibleParameters.size() < node.parameters.size();
+    inspectorDetailButton.setButtonText(inspectorShowAdvanced ? "Less" : "More");
+
+    for (const auto& parameter : visibleParameters)
     {
         if (node.typeId == "Filter" && parameter.spec.id == "mode")
         {
@@ -976,6 +1165,35 @@ void MainComponent::showTrackInspector(const NodeSnapshot& track)
         inspectorToggleButtons.add(monitorToggle);
     }
 
+    std::vector<NodeParameterState> visibleTrackParameters;
+    visibleTrackParameters.reserve(track.parameters.size());
+
+    for (const auto& parameter : track.parameters)
+    {
+        if (track.trackTypeId == "midi" && parameter.spec.id.startsWith("step"))
+            continue;
+
+        if (parameter.spec.id == "mute"
+            || parameter.spec.id == "solo"
+            || parameter.spec.id == "arm"
+            || parameter.spec.id == "sync"
+            || parameter.spec.id == "monitor"
+            || parameter.spec.id == "looping")
+            continue;
+
+        const auto shouldShow = inspectorShowAdvanced
+            || isEssentialTrackParameter(track.trackTypeId, parameter.spec.id)
+            || visibleTrackParameters.size() < 4;
+
+        if (shouldShow)
+            visibleTrackParameters.push_back(parameter);
+    }
+
+    const auto hasHiddenSteps = std::any_of(track.parameters.begin(), track.parameters.end(),
+                                            [](const auto& parameter) { return parameter.spec.id.startsWith("step"); });
+    inspectorHasAdvanced = visibleTrackParameters.size() < (track.parameters.size() - 5 - (track.trackTypeId == "audio" ? 1 : 0)) || hasHiddenSteps;
+    inspectorDetailButton.setButtonText(inspectorShowAdvanced ? "Less" : "More");
+
     for (const auto& parameter : track.parameters)
     {
         if (parameter.spec.id == "mute")
@@ -1025,24 +1243,8 @@ void MainComponent::showTrackInspector(const NodeSnapshot& track)
         inspectorSliders.add(slider);
     };
 
-    for (const auto& parameter : track.parameters)
+    for (const auto& parameter : visibleTrackParameters)
     {
-        if (track.trackTypeId == "midi" && parameter.spec.id.startsWith("step"))
-            continue;
-
-        if (parameter.spec.id == "mute")
-            continue;
-        if (parameter.spec.id == "solo")
-            continue;
-        if (parameter.spec.id == "arm")
-            continue;
-        if (parameter.spec.id == "sync")
-            continue;
-        if (parameter.spec.id == "monitor")
-            continue;
-        if (parameter.spec.id == "looping")
-            continue;
-
         addSlider(parameter.spec.name,
                   parameter.spec.minValue,
                   parameter.spec.maxValue,
@@ -1053,7 +1255,7 @@ void MainComponent::showTrackInspector(const NodeSnapshot& track)
                   });
     }
 
-    if (track.trackTypeId == "midi")
+    if (track.trackTypeId == "midi" && inspectorShowAdvanced)
     {
         for (const auto& parameter : track.parameters)
         {
@@ -1086,7 +1288,7 @@ void MainComponent::toggleInspectorCollapsed()
         inspectorPanelWidth = 0;
     }
 
-    toggleInspectorButton.setButtonText(inspectorCollapsed ? "Show" : "Hide");
+    toggleInspectorButton.setButtonText(inspectorCollapsed ? "Show Inspector" : "Hide Inspector");
     rebuildInspector();
     resized();
     repaint();
@@ -1110,14 +1312,14 @@ void MainComponent::applyModeState()
     }
 
     canvas.setEditMode(editMode);
-    transportButton.setButtonText(editMode ? "Edit" : "Perform");
+    transportButton.setButtonText(editMode ? "Patch Mode" : "Play Mode");
     playButton.setEnabled(! editMode);
     recordButton.setEnabled(! editMode);
     rewindButton.setEnabled(! editMode);
     transportLoopToggle.setEnabled(! editMode);
     bpmSlider.setEnabled(! editMode);
     hintLabel.setText(editMode
-                          ? "Edit mode. Cmd+E switches to performance."
-                          : "Performance mode. Use Play and Rec. Cmd+E returns to edit.",
+                          ? "Patch mode: right-click to add modules, then drag between sockets to connect them."
+                          : "Play mode: the patch is locked so you can focus on transport and performance.",
                       juce::dontSendNotification);
 }

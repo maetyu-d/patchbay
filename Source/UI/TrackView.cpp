@@ -35,6 +35,20 @@ void TrackView::paint(juce::Graphics& g)
         if (node.isTrack)
             tracks.push_back(node);
 
+    if (tracks.empty())
+    {
+        g.setColour(juce::Colour(0xff202735));
+        g.fillRect(rowBounds);
+        g.setColour(juce::Colours::white.withAlpha(0.9f));
+        g.setFont(juce::FontOptions(16.0f, juce::Font::bold));
+        g.drawText("No tracks yet.", rowBounds.removeFromTop(32), juce::Justification::centred);
+        g.setColour(juce::Colour(0xff9fb0c4));
+        g.setFont(juce::FontOptions(13.0f));
+        g.drawText("Add Audio Track or MIDI Track from the canvas menu. They patch like every other module.",
+                   rowBounds.removeFromTop(24),
+                   juce::Justification::centred);
+    }
+
     const auto transport = graph.getTransportState();
     g.setColour(juce::Colour(0xff202735));
     g.fillRect(timeline);
@@ -94,7 +108,7 @@ void TrackView::paint(juce::Graphics& g)
 
         g.setFont(juce::FontOptions(11.5f));
         g.setColour(juce::Colour(0xffeff4fa));
-        g.drawText(track.trackTypeId == "audio" ? "Audio Track" : "MIDI Track",
+        g.drawText(track.trackTypeId == "audio" ? "Audio" : "MIDI",
                    header.reduced(14, 8).removeFromBottom(18),
                    juce::Justification::centredLeft);
 
@@ -186,7 +200,7 @@ void TrackView::paint(juce::Graphics& g)
     g.drawText("Master", masterHeader.reduced(14, 10).removeFromTop(20), juce::Justification::centredLeft);
     g.setColour(juce::Colour(0xffdbe3ec));
     g.setFont(juce::FontOptions(11.0f));
-    g.drawText("Output / limiter", masterHeader.reduced(14, 10).removeFromBottom(18), juce::Justification::centredLeft);
+    g.drawText("Main output", masterHeader.reduced(14, 10).removeFromBottom(18), juce::Justification::centredLeft);
 }
 
 void TrackView::mouseDown(const juce::MouseEvent& event)

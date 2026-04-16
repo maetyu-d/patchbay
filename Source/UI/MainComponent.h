@@ -55,6 +55,13 @@ class MainComponent final : public juce::AudioAppComponent,
                             private juce::ChangeListener
 {
 public:
+    enum class CloseDecision
+    {
+        cancel,
+        proceed,
+        discardAndQuit
+    };
+
     MainComponent();
     ~MainComponent() override;
 
@@ -68,7 +75,9 @@ public:
     void mouseDown(const juce::MouseEvent& event) override;
     void mouseDrag(const juce::MouseEvent& event) override;
     void mouseUp(const juce::MouseEvent& event) override;
-    bool attemptWindowClose();
+    CloseDecision attemptWindowClose();
+    void attemptWindowCloseAsync(std::function<void(CloseDecision)> callback);
+    void prepareForQuit();
 
 private:
     void timerCallback() override;
@@ -78,11 +87,10 @@ private:
     void seedDefaultSession();
     void newSession();
     void saveSession();
+    void saveSessionAsync(std::function<void(bool)> callback);
     void saveSessionToFile(const juce::File& file);
     void loadSession();
     void loadSessionFromFile(const juce::File& file);
-    void addAudioTrack();
-    void addMidiTrack();
     void togglePlayback();
     void toggleRecording();
     void rewindTransport();
@@ -100,7 +108,7 @@ private:
     void writeAutosaveSnapshot();
     void clearAutosaveSnapshot();
     void maybeRestoreAutosave();
-    bool confirmAbandonChanges(const juce::String& title, const juce::String& message);
+    CloseDecision confirmAbandonChanges(const juce::String& title, const juce::String& message);
 
     PatchGraph graph;
     PatchCanvas canvas;
@@ -109,14 +117,13 @@ private:
     juce::TextButton newButton { "New" };
     juce::TextButton saveButton { "Save" };
     juce::TextButton loadButton { "Open" };
-    juce::TextButton transportButton { "Edit" };
-    juce::TextButton playButton { "Play" };
-    juce::TextButton recordButton { "Rec" };
+    juce::TextButton transportButton { "Patch" };
+    juce::TextButton playButton { "Start" };
+    juce::TextButton recordButton { "Record" };
     juce::TextButton rewindButton { "Rewind" };
-    juce::TextButton addAudioTrackButton { "Audio" };
-    juce::TextButton addMidiTrackButton { "MIDI" };
-    juce::TextButton scanPluginsButton { "Scan" };
-    juce::TextButton toggleInspectorButton { "Hide" };
+    juce::TextButton scanPluginsButton { "Scan Plug-ins" };
+    juce::TextButton toggleInspectorButton { "Inspector" };
+    juce::TextButton inspectorDetailButton { "More" };
     juce::TextButton loadTrackClipButton { "Load" };
     juce::ToggleButton trackMuteToggle { "Mute" };
     juce::Label transportPositionLabel;
@@ -144,6 +151,8 @@ private:
     int lastExpandedInspectorWidth = 300;
     bool resizingInspector = false;
     bool inspectorCollapsed = false;
+    bool inspectorShowAdvanced = false;
+    bool inspectorHasAdvanced = false;
     bool dirty = false;
     bool suppressDirtyTracking = false;
     int autosaveTickCounter = 0;

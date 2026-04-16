@@ -107,6 +107,7 @@ private:
     {
         juce::Uuid id;
         juce::String typeId;
+        juce::String displayName;
         juce::Point<float> position;
         std::unique_ptr<ModuleNode> node;
     };
@@ -121,6 +122,7 @@ private:
 
     RuntimeState& getOrCreateRuntimeState(const NodeEntry& node, int blockSize);
     const NodeEntry* findNode(const juce::Uuid& nodeId) const;
+    juce::String makeUniqueNodeName(const juce::String& baseName) const;
     void pruneInvalidConnectionsForNode(const juce::Uuid& nodeId);
     void pushUndoSnapshot();
     void restoreFromState(const juce::ValueTree& state);

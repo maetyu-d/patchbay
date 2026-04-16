@@ -14,8 +14,10 @@ public:
 
     void paint(juce::Graphics& g) override;
     void resized() override;
+    void mouseMove(const juce::MouseEvent& event) override;
     void mouseDown(const juce::MouseEvent& event) override;
     void mouseUp(const juce::MouseEvent& event) override;
+    void mouseExit(const juce::MouseEvent& event) override;
     bool keyPressed(const juce::KeyPress& key) override;
     void setSelectionChangedCallback(std::function<void(std::optional<juce::Uuid>)> callback);
     void setCreateNodeCallback(std::function<void(const juce::String&, juce::Point<float>)> callback);
@@ -24,6 +26,7 @@ public:
     std::optional<juce::Uuid> getSelectedNode() const;
     void setSelectedNode(std::optional<juce::Uuid> nodeId);
     void clearSelection();
+    void closeDetachedEditors();
 
 private:
     class NodeComponent;
@@ -36,6 +39,7 @@ private:
     void syncDetachedEditors(const std::vector<NodeSnapshot>& nodes);
     void openDetachedEditorForNode(const juce::Uuid& nodeId);
     juce::Path createCablePath(const GraphConnection& connection) const;
+    juce::String describeConnection(const GraphConnection& connection) const;
     std::optional<GraphConnection> findConnectionAt(juce::Point<float> point) const;
     static bool connectionsMatch(const GraphConnection& lhs, const GraphConnection& rhs);
     juce::Point<float> worldToScreen(juce::Point<float> worldPoint) const;
@@ -48,6 +52,7 @@ private:
     std::optional<SocketRef> pendingSocket;
     std::optional<juce::Uuid> selectedNode;
     std::optional<GraphConnection> selectedConnection;
+    std::optional<GraphConnection> hoveredConnection;
     std::function<void(std::optional<juce::Uuid>)> onSelectionChanged;
     std::function<void(const juce::String&, juce::Point<float>)> onCreateNode;
     std::function<void()> onToggleEditMode;

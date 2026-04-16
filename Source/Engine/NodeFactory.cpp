@@ -3,9 +3,37 @@
 #include "../Modules/ExampleModules.h"
 #include "../Modules/ExternalPluginModule.h"
 
+std::vector<NodeMenuSection> NodeFactory::getMenuSections()
+{
+    return {
+        { "Tracks", { "AudioTrack", "MidiTrack" } },
+        { "Sound", { "Oscillator", "Plugin", "Filter", "Gain", "Output" } },
+        { "Control", { "LFO", "Metronome", "Comparator", "BpmToLfo", "TimeSignature", "AD", "ADSR" } },
+        { "Mix", { "Sum", "ChannelStrip", "Send", "Return", "Meter", "Bus", "Router" } },
+        { "Math", { "Add", "Subtract", "Multiply", "Divide" } }
+    };
+}
+
 juce::StringArray NodeFactory::getAvailableTypes()
 {
-    return { "Oscillator", "LFO", "Metronome", "Comparator", "BpmToLfo", "TimeSignature", "AD", "ADSR", "Filter", "ChannelStrip", "Send", "Return", "Meter", "Bus", "Gain", "Add", "Subtract", "Multiply", "Divide", "Sum", "Router", "Plugin", "Output", "AudioTrack", "MidiTrack" };
+    juce::StringArray all;
+
+    for (const auto& section : getMenuSections())
+        all.addArray(section.types);
+
+    return all;
+}
+
+juce::String NodeFactory::getDisplayNameForType(const juce::String& type)
+{
+    if (type == "AudioTrack") return "Audio Track";
+    if (type == "MidiTrack") return "MIDI Track";
+    if (type == "BpmToLfo") return "BPM to LFO";
+    if (type == "TimeSignature") return "Time Signature";
+    if (type == "ChannelStrip") return "Channel Strip";
+    if (type == "AD") return "AD Envelope";
+    if (type == "ADSR") return "ADSR Envelope";
+    return type;
 }
 
 std::unique_ptr<ModuleNode> NodeFactory::create(const juce::String& type)
