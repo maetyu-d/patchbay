@@ -29,6 +29,7 @@ juce::Uuid PatchGraph::addNode(std::unique_ptr<ModuleNode> node, juce::Point<flo
     jassert(node != nullptr);
 
     const juce::ScopedLock lock(graphLock);
+    pushUndoSnapshot();
 
     auto* entry = new NodeEntry();
     entry->id = juce::Uuid();
@@ -46,6 +47,7 @@ juce::Uuid PatchGraph::addNode(std::unique_ptr<ModuleNode> node, juce::Point<flo
 void PatchGraph::removeNode(const juce::Uuid& nodeId)
 {
     const juce::ScopedLock lock(graphLock);
+    pushUndoSnapshot();
 
     connections.erase(std::remove_if(connections.begin(), connections.end(),
                                      [&nodeId](const auto& connection)
@@ -103,6 +105,7 @@ bool PatchGraph::connect(const SocketRef& source, const SocketRef& destination)
     if (exists)
         return false;
 
+    pushUndoSnapshot();
     connections.push_back({ source, destination });
     sendChangeMessage();
     return true;
@@ -111,6 +114,7 @@ bool PatchGraph::connect(const SocketRef& source, const SocketRef& destination)
 void PatchGraph::disconnect(const GraphConnection& connection)
 {
     const juce::ScopedLock lock(graphLock);
+    pushUndoSnapshot();
 
     connections.erase(std::remove_if(connections.begin(), connections.end(),
                                      [&connection](const auto& candidate)
@@ -157,7 +161,9 @@ std::vector<NodeSnapshot> PatchGraph::getNodes() const
             entry->node->isEditorOpen(),
             entry->node->isEditorDetached(),
             entry->node->getEditorScale(),
-            entry->node->getMeterLevels()
+            entry->node->getMeterLevels(),
+            entry->node->getTrackLaneClips(),
+            entry->node->getSelectedTrackClipId()
         });
     }
 
@@ -191,6 +197,7 @@ bool PatchGraph::setNodeParameter(const juce::Uuid& nodeId, const juce::String& 
     {
         if (entry->id == nodeId)
         {
+            pushUndoSnapshot();
             entry->node->setParameterValue(parameterId, value);
             pruneInvalidConnectionsForNode(nodeId);
             sendChangeMessage();
@@ -212,6 +219,7 @@ bool PatchGraph::assignExternalPlugin(const juce::Uuid& nodeId, const juce::Stri
 
         if (auto* externalNode = dynamic_cast<ExternalPluginModule*>(entry->node.get()))
         {
+            pushUndoSnapshot();
             externalNode->setPluginIdentifier(identifier);
             externalNode->prepare(currentSampleRate, currentBlockSize);
             pruneInvalidConnectionsForNode(nodeId);
@@ -233,10 +241,96 @@ bool PatchGraph::loadNodeFile(const juce::Uuid& nodeId, const juce::File& file)
     {
         if (entry->id == nodeId)
         {
+            const auto previousState = createStateUnlocked();
             const auto loaded = entry->node->loadFile(file);
             if (loaded)
+            {
+                if (! historySuspended)
+                {
+                    undoStack.push_back(previousState);
+                    redoStack.clear();
+                    if (undoStack.size() > 128)
+                        undoStack.erase(undoStack.begin());
+                }
                 sendChangeMessage();
+            }
             return loaded;
+        }
+    }
+
+    return false;
+}
+
+bool PatchGraph::addTrackClip(const juce::Uuid& nodeId, float startBar, float lengthBars)
+{
+    const juce::ScopedLock lock(graphLock);
+
+    for (auto* entry : nodes)
+    {
+        if (entry->id == nodeId)
+        {
+            pushUndoSnapshot();
+            const auto changed = entry->node->addTrackClip(startBar, lengthBars);
+            if (changed)
+                sendChangeMessage();
+            return changed;
+        }
+    }
+
+    return false;
+}
+
+bool PatchGraph::moveTrackClip(const juce::Uuid& nodeId, const juce::String& clipId, float startBar)
+{
+    const juce::ScopedLock lock(graphLock);
+
+    for (auto* entry : nodes)
+    {
+        if (entry->id == nodeId)
+        {
+            pushUndoSnapshot();
+            const auto changed = entry->node->moveTrackClip(clipId, startBar);
+            if (changed)
+                sendChangeMessage();
+            return changed;
+        }
+    }
+
+    return false;
+}
+
+bool PatchGraph::resizeTrackClip(const juce::Uuid& nodeId, const juce::String& clipId, float startBar, float lengthBars)
+{
+    const juce::ScopedLock lock(graphLock);
+
+    for (auto* entry : nodes)
+    {
+        if (entry->id == nodeId)
+        {
+            pushUndoSnapshot();
+            const auto changed = entry->node->resizeTrackClip(clipId, startBar, lengthBars);
+            if (changed)
+                sendChangeMessage();
+            return changed;
+        }
+    }
+
+    return false;
+}
+
+bool PatchGraph::setSelectedTrackClip(const juce::Uuid& nodeId, const juce::String& clipId)
+{
+    const juce::ScopedLock lock(graphLock);
+
+    for (auto* entry : nodes)
+    {
+        if (entry->id == nodeId)
+        {
+            pushUndoSnapshot();
+            const auto changed = entry->node->setSelectedTrackClipId(clipId);
+            if (changed)
+                sendChangeMessage();
+            return changed;
         }
     }
 
@@ -264,6 +358,7 @@ bool PatchGraph::setNodeEditorOpen(const juce::Uuid& nodeId, bool isOpen)
     {
         if (entry->id == nodeId)
         {
+            pushUndoSnapshot();
             entry->node->setEditorOpen(isOpen);
             sendChangeMessage();
             return true;
@@ -281,6 +376,7 @@ bool PatchGraph::setNodeEditorDetached(const juce::Uuid& nodeId, bool isDetached
     {
         if (entry->id == nodeId)
         {
+            pushUndoSnapshot();
             entry->node->setEditorDetached(isDetached);
             sendChangeMessage();
             return true;
@@ -298,6 +394,7 @@ bool PatchGraph::setNodeEditorScale(const juce::Uuid& nodeId, float scale)
     {
         if (entry->id == nodeId)
         {
+            pushUndoSnapshot();
             entry->node->setEditorScale(scale);
             sendChangeMessage();
             return true;
@@ -310,6 +407,11 @@ bool PatchGraph::setNodeEditorScale(const juce::Uuid& nodeId, float scale)
 juce::ValueTree PatchGraph::createState() const
 {
     const juce::ScopedLock lock(graphLock);
+    return createStateUnlocked();
+}
+
+juce::ValueTree PatchGraph::createStateUnlocked() const
+{
     juce::ValueTree state("PATCH_GRAPH");
     state.setProperty("playing", playing, nullptr);
     state.setProperty("bpm", transportBpm, nullptr);
@@ -348,6 +450,12 @@ juce::ValueTree PatchGraph::createState() const
 void PatchGraph::loadState(const juce::ValueTree& state)
 {
     const juce::ScopedLock lock(graphLock);
+    pushUndoSnapshot();
+    restoreFromState(state);
+}
+
+void PatchGraph::restoreFromState(const juce::ValueTree& state)
+{
     nodes.clear();
     connections.clear();
     runtimeStates.clear();
@@ -662,6 +770,7 @@ std::vector<const PatchGraph::NodeEntry*> PatchGraph::buildRenderOrder() const
 void PatchGraph::setPlaying(bool shouldPlay)
 {
     const juce::ScopedLock lock(graphLock);
+    pushUndoSnapshot();
     playing = shouldPlay;
 
     if (! playing)
@@ -679,6 +788,7 @@ bool PatchGraph::isPlaying() const
 void PatchGraph::setRecording(bool shouldRecord)
 {
     const juce::ScopedLock lock(graphLock);
+    pushUndoSnapshot();
     recording = shouldRecord;
 
     if (recording)
@@ -696,6 +806,7 @@ bool PatchGraph::isRecording() const
 void PatchGraph::resetTransport()
 {
     const juce::ScopedLock lock(graphLock);
+    pushUndoSnapshot();
     transportSamplePosition = 0;
     sendChangeMessage();
 }
@@ -703,6 +814,7 @@ void PatchGraph::resetTransport()
 void PatchGraph::setTransportBpm(double newBpm)
 {
     const juce::ScopedLock lock(graphLock);
+    pushUndoSnapshot();
     transportBpm = juce::jlimit(30.0, 240.0, newBpm);
     sendChangeMessage();
 }
@@ -710,6 +822,7 @@ void PatchGraph::setTransportBpm(double newBpm)
 void PatchGraph::setTransportTimeSignature(int numerator, int denominator)
 {
     const juce::ScopedLock lock(graphLock);
+    pushUndoSnapshot();
     transportNumerator = juce::jlimit(1, 12, numerator);
     transportDenominator = juce::jlimit(2, 16, denominator);
     sendChangeMessage();
@@ -718,6 +831,7 @@ void PatchGraph::setTransportTimeSignature(int numerator, int denominator)
 void PatchGraph::setTransportLoopEnabled(bool shouldLoop)
 {
     const juce::ScopedLock lock(graphLock);
+    pushUndoSnapshot();
     transportLoopEnabled = shouldLoop;
     sendChangeMessage();
 }
@@ -725,6 +839,7 @@ void PatchGraph::setTransportLoopEnabled(bool shouldLoop)
 void PatchGraph::setTransportLoopBars(int startBar, int endBar)
 {
     const juce::ScopedLock lock(graphLock);
+    pushUndoSnapshot();
     transportLoopStartBar = juce::jmax(1, startBar);
     transportLoopEndBar = juce::jmax(transportLoopStartBar + 1, endBar);
     sendChangeMessage();
@@ -743,4 +858,64 @@ TransportState PatchGraph::getTransportState() const
              transportLoopEndBar,
              currentSampleRate,
              transportSamplePosition };
+}
+
+bool PatchGraph::canUndo() const
+{
+    const juce::ScopedLock lock(graphLock);
+    return ! undoStack.empty();
+}
+
+bool PatchGraph::canRedo() const
+{
+    const juce::ScopedLock lock(graphLock);
+    return ! redoStack.empty();
+}
+
+bool PatchGraph::undo()
+{
+    const juce::ScopedLock lock(graphLock);
+    if (undoStack.empty())
+        return false;
+
+    const auto current = createStateUnlocked();
+    auto previous = undoStack.back();
+    undoStack.pop_back();
+    redoStack.push_back(current);
+
+    const auto previousSuspended = historySuspended;
+    historySuspended = true;
+    restoreFromState(previous);
+    historySuspended = previousSuspended;
+    return true;
+}
+
+bool PatchGraph::redo()
+{
+    const juce::ScopedLock lock(graphLock);
+    if (redoStack.empty())
+        return false;
+
+    const auto current = createStateUnlocked();
+    auto next = redoStack.back();
+    redoStack.pop_back();
+    undoStack.push_back(current);
+
+    const auto previousSuspended = historySuspended;
+    historySuspended = true;
+    restoreFromState(next);
+    historySuspended = previousSuspended;
+    return true;
+}
+
+void PatchGraph::pushUndoSnapshot()
+{
+    if (historySuspended)
+        return;
+
+    undoStack.push_back(createStateUnlocked());
+    redoStack.clear();
+
+    if (undoStack.size() > 128)
+        undoStack.erase(undoStack.begin());
 }

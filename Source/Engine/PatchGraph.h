@@ -37,6 +37,8 @@ struct NodeSnapshot
     bool editorDetached = false;
     float editorScale = 1.0f;
     juce::Point<float> meterLevels;
+    std::vector<TrackLaneClipPreview> trackClips;
+    juce::String selectedClipId;
 };
 
 struct TransportState
@@ -70,6 +72,10 @@ public:
     std::vector<GraphConnection> getConnections() const;
     bool setNodeParameter(const juce::Uuid& nodeId, const juce::String& parameterId, float value);
     bool loadNodeFile(const juce::Uuid& nodeId, const juce::File& file);
+    bool addTrackClip(const juce::Uuid& nodeId, float startBar, float lengthBars);
+    bool moveTrackClip(const juce::Uuid& nodeId, const juce::String& clipId, float startBar);
+    bool resizeTrackClip(const juce::Uuid& nodeId, const juce::String& clipId, float startBar, float lengthBars);
+    bool setSelectedTrackClip(const juce::Uuid& nodeId, const juce::String& clipId);
     bool assignExternalPlugin(const juce::Uuid& nodeId, const juce::String& identifier);
     juce::Component* getNodeEmbeddedEditor(const juce::Uuid& nodeId);
     bool setNodeEditorOpen(const juce::Uuid& nodeId, bool isOpen);
@@ -91,6 +97,10 @@ public:
     void setTransportLoopEnabled(bool shouldLoop);
     void setTransportLoopBars(int startBar, int endBar);
     TransportState getTransportState() const;
+    bool canUndo() const;
+    bool canRedo() const;
+    bool undo();
+    bool redo();
 
 private:
     struct NodeEntry
@@ -112,6 +122,9 @@ private:
     RuntimeState& getOrCreateRuntimeState(const NodeEntry& node, int blockSize);
     const NodeEntry* findNode(const juce::Uuid& nodeId) const;
     void pruneInvalidConnectionsForNode(const juce::Uuid& nodeId);
+    void pushUndoSnapshot();
+    void restoreFromState(const juce::ValueTree& state);
+    juce::ValueTree createStateUnlocked() const;
 
     std::vector<const NodeEntry*> buildRenderOrder() const;
 
@@ -130,4 +143,7 @@ private:
     bool transportLoopEnabled = false;
     int transportLoopStartBar = 1;
     int transportLoopEndBar = 5;
+    bool historySuspended = false;
+    std::vector<juce::ValueTree> undoStack;
+    std::vector<juce::ValueTree> redoStack;
 };

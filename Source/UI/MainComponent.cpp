@@ -50,6 +50,7 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
         button.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
     };
 
+    styleButton(newButton, juce::Colour(0xff2b3a4f));
     styleButton(saveButton, juce::Colour(0xff2b3a4f));
     styleButton(loadButton, juce::Colour(0xff2b3a4f));
     styleButton(transportButton, juce::Colour(0xff355c50));
@@ -63,7 +64,13 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     styleButton(loadTrackClipButton, juce::Colour(0xff35576d));
 
     externalPluginManager.initialise();
+    graph.addChangeListener(this);
+    autosaveFile = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                       .getChildFile("PatchBayDAW")
+                       .getChildFile("autosave.patchbay");
+    autosaveFile.getParentDirectory().createDirectory();
 
+    newButton.onClick = [this] { newSession(); };
     saveButton.onClick = [this] { saveSession(); };
     loadButton.onClick = [this] { loadSession(); };
     transportButton.onClick = [this] { toggleEditMode(); };
@@ -81,6 +88,7 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
             graph.setNodeParameter(*selectedTrackId, "mute", trackMuteToggle.getToggleState() ? 1.0f : 0.0f);
     };
 
+    addAndMakeVisible(newButton);
     addAndMakeVisible(saveButton);
     addAndMakeVisible(loadButton);
     addAndMakeVisible(transportButton);
@@ -163,11 +171,13 @@ MainComponent::MainComponent() : canvas(graph), trackView(graph)
     setSize(1500, 940);
     editMode = true;
     applyModeState();
+    maybeRestoreAutosave();
     startTimerHz(24);
 }
 
 MainComponent::~MainComponent()
 {
+    graph.removeChangeListener(this);
     shutdownAudio();
 }
 
@@ -198,6 +208,7 @@ void MainComponent::resized()
     auto bounds = getLocalBounds().reduced(12);
     auto toolbar = bounds.removeFromTop(toolbarHeight);
 
+    newButton.setBounds(toolbar.removeFromLeft(76).reduced(4));
     saveButton.setBounds(toolbar.removeFromLeft(80).reduced(4));
     loadButton.setBounds(toolbar.removeFromLeft(80).reduced(4));
     transportButton.setBounds(toolbar.removeFromLeft(80).reduced(4));
@@ -319,6 +330,24 @@ void MainComponent::timerCallback()
     playButton.setButtonText(transport.isPlaying ? "Stop" : "Play");
     recordButton.setButtonText(transport.isRecording ? "Rec On" : "Rec");
     recordButton.setColour(juce::TextButton::buttonColourId, transport.isRecording ? juce::Colour(0xffc2414b) : juce::Colour(0xff7a2f35));
+
+    if (dirty)
+    {
+        ++autosaveTickCounter;
+        if (autosaveTickCounter >= 24 * 10)
+        {
+            autosaveTickCounter = 0;
+            writeAutosaveSnapshot();
+        }
+    }
+}
+
+void MainComponent::changeListenerCallback(juce::ChangeBroadcaster* source)
+{
+    if (source != &graph || suppressDirtyTracking)
+        return;
+
+    dirty = true;
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -329,6 +358,13 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
         toggleEditMode();
         return true;
     }
+
+    if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0))
+        return graph.undo();
+
+    if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)
+        || key == juce::KeyPress('y', juce::ModifierKeys::commandModifier, 0))
+        return graph.redo();
 
     return juce::AudioAppComponent::keyPressed(key);
 }
@@ -398,6 +434,30 @@ void MainComponent::scanExternalPlugins()
 
 void MainComponent::seedDefaultSession() {}
 
+void MainComponent::newSession()
+{
+    if (! confirmAbandonChanges("Start New Session?",
+                                "The current patch has unsaved changes. Save it, discard it, or cancel creating a new blank session."))
+        return;
+
+    juce::ValueTree state("PATCHBAY_SESSION");
+    juce::ValueTree graphState("PATCH_GRAPH");
+    graphState.setProperty("playing", false, nullptr);
+    graphState.setProperty("bpm", 120.0, nullptr);
+    graphState.setProperty("numerator", 4, nullptr);
+    graphState.setProperty("denominator", 4, nullptr);
+    graphState.setProperty("loopEnabled", false, nullptr);
+    graphState.setProperty("loopStartBar", 1, nullptr);
+    graphState.setProperty("loopEndBar", 5, nullptr);
+    state.appendChild(graphState, nullptr);
+
+    currentSessionFile = juce::File();
+    loadSessionState(state);
+    dirty = false;
+    autosaveTickCounter = 0;
+    clearAutosaveSnapshot();
+}
+
 void MainComponent::saveSession()
 {
     activeFileChooser = std::make_unique<juce::FileChooser>("Save PatchBay session", juce::File(), "*.patchbay", true, false, this);
@@ -412,11 +472,7 @@ void MainComponent::saveSession()
                                        if (file == juce::File())
                                            return;
 
-                                       juce::ValueTree state("PATCHBAY_SESSION");
-                                       state.appendChild(graph.createState(), nullptr);
-
-                                       if (auto xml = state.createXml())
-                                           xml->writeTo(file);
+                                       saveSessionToFile(file);
                                    });
 }
 
@@ -440,14 +496,41 @@ void MainComponent::loadSession()
                                        if (! state.isValid())
                                            return;
 
-                                       graph.loadState(state.getChildWithName("PATCH_GRAPH"));
-
-                                       selectedNodeId.reset();
-                                       selectedTrackId.reset();
-                                       canvas.clearSelection();
-                                       trackView.setSelectedTrack(std::nullopt);
-                                       rebuildInspector();
+                                       loadSessionFromFile(file);
                                    });
+}
+
+void MainComponent::saveSessionToFile(const juce::File& file)
+{
+    auto target = file;
+    if (target.getFileExtension() != ".patchbay")
+        target = target.withFileExtension(".patchbay");
+
+    if (auto xml = createSessionState().createXml())
+    {
+        xml->writeTo(target);
+        currentSessionFile = target;
+        dirty = false;
+        autosaveTickCounter = 0;
+        clearAutosaveSnapshot();
+    }
+}
+
+void MainComponent::loadSessionFromFile(const juce::File& file)
+{
+    std::unique_ptr<juce::XmlElement> xml(juce::XmlDocument::parse(file));
+    if (xml == nullptr)
+        return;
+
+    const auto state = juce::ValueTree::fromXml(*xml);
+    if (! state.isValid())
+        return;
+
+    currentSessionFile = file;
+    loadSessionState(state);
+    dirty = false;
+    autosaveTickCounter = 0;
+    clearAutosaveSnapshot();
 }
 
 void MainComponent::addAudioTrack()
@@ -473,7 +556,10 @@ void MainComponent::addMidiTrack()
 void MainComponent::togglePlayback()
 {
     const auto shouldPlay = ! graph.isPlaying();
+    const auto previousSuppression = suppressDirtyTracking;
+    suppressDirtyTracking = true;
     graph.setPlaying(shouldPlay);
+    suppressDirtyTracking = previousSuppression;
 }
 
 void MainComponent::toggleRecording()
@@ -481,12 +567,18 @@ void MainComponent::toggleRecording()
     if (editMode)
         toggleEditMode();
 
+    const auto previousSuppression = suppressDirtyTracking;
+    suppressDirtyTracking = true;
     graph.setRecording(! graph.isRecording());
+    suppressDirtyTracking = previousSuppression;
 }
 
 void MainComponent::rewindTransport()
 {
+    const auto previousSuppression = suppressDirtyTracking;
+    suppressDirtyTracking = true;
     graph.resetTransport();
+    suppressDirtyTracking = previousSuppression;
 }
 
 void MainComponent::loadAudioIntoSelectedTrack()
@@ -540,6 +632,104 @@ void MainComponent::rebuildInspector()
     }
 
     resized();
+}
+
+juce::ValueTree MainComponent::createSessionState() const
+{
+    juce::ValueTree state("PATCHBAY_SESSION");
+    state.appendChild(graph.createState(), nullptr);
+    if (currentSessionFile.existsAsFile())
+        state.setProperty("sessionFile", currentSessionFile.getFullPathName(), nullptr);
+    return state;
+}
+
+void MainComponent::loadSessionState(const juce::ValueTree& state)
+{
+    const auto previousSuppression = suppressDirtyTracking;
+    suppressDirtyTracking = true;
+    graph.loadState(state.getChildWithName("PATCH_GRAPH"));
+    suppressDirtyTracking = previousSuppression;
+
+    selectedNodeId.reset();
+    selectedTrackId.reset();
+    canvas.clearSelection();
+    trackView.setSelectedTrack(std::nullopt);
+    rebuildInspector();
+}
+
+void MainComponent::writeAutosaveSnapshot()
+{
+    if (! dirty)
+        return;
+
+    if (auto xml = createSessionState().createXml())
+        xml->writeTo(autosaveFile);
+}
+
+void MainComponent::clearAutosaveSnapshot()
+{
+    if (autosaveFile.existsAsFile())
+        autosaveFile.deleteFile();
+}
+
+void MainComponent::maybeRestoreAutosave()
+{
+    if (! autosaveFile.existsAsFile())
+        return;
+
+    const auto result = juce::AlertWindow::showYesNoCancelBox(juce::AlertWindow::QuestionIcon,
+                                                              "Restore Autosave?",
+                                                              "An autosave snapshot was found. Restore it, discard it, or cancel startup changes?",
+                                                              "Restore",
+                                                              "Discard",
+                                                              "Cancel",
+                                                              this,
+                                                              nullptr);
+
+    if (result == 1)
+        loadSessionFromFile(autosaveFile);
+    else if (result == 2)
+        clearAutosaveSnapshot();
+}
+
+bool MainComponent::attemptWindowClose()
+{
+    if (! confirmAbandonChanges("Save Changes?",
+                                "The current patch has unsaved changes."))
+        return false;
+
+    clearAutosaveSnapshot();
+    return true;
+}
+
+bool MainComponent::confirmAbandonChanges(const juce::String& title, const juce::String& message)
+{
+    if (! dirty)
+        return true;
+
+    const auto result = juce::AlertWindow::showYesNoCancelBox(juce::AlertWindow::WarningIcon,
+                                                              title,
+                                                              message,
+                                                              "Save",
+                                                              "Discard",
+                                                              "Cancel",
+                                                              this,
+                                                              nullptr);
+
+    if (result == 0)
+        return false;
+
+    if (result == 1)
+    {
+        if (currentSessionFile == juce::File())
+            saveSession();
+        else
+            saveSessionToFile(currentSessionFile);
+
+        return ! dirty;
+    }
+
+    return true;
 }
 
 void MainComponent::clearInspectorControls()
@@ -912,8 +1102,11 @@ void MainComponent::applyModeState()
 {
     if (editMode)
     {
+        const auto previousSuppression = suppressDirtyTracking;
+        suppressDirtyTracking = true;
         graph.setRecording(false);
         graph.setPlaying(false);
+        suppressDirtyTracking = previousSuppression;
     }
 
     canvas.setEditMode(editMode);

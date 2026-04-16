@@ -29,6 +29,16 @@ struct NodeParameterState
     float value = 0.0f;
 };
 
+struct TrackLaneClipPreview
+{
+    juce::String clipId;
+    juce::String label;
+    float startBar = 1.0f;
+    float lengthBars = 4.0f;
+    juce::Colour colour = juce::Colour(0xff4a5568);
+    bool selected = false;
+};
+
 struct NodeRenderContext
 {
     std::vector<juce::AudioBuffer<float>*> audioInputs;
@@ -115,6 +125,40 @@ public:
     virtual juce::String getResourcePath() const
     {
         return {};
+    }
+
+    virtual std::vector<TrackLaneClipPreview> getTrackLaneClips() const
+    {
+        return {};
+    }
+
+    virtual juce::String getSelectedTrackClipId() const
+    {
+        return {};
+    }
+
+    virtual bool setSelectedTrackClipId(const juce::String& clipId)
+    {
+        juce::ignoreUnused(clipId);
+        return false;
+    }
+
+    virtual bool addTrackClip(float startBar, float lengthBars)
+    {
+        juce::ignoreUnused(startBar, lengthBars);
+        return false;
+    }
+
+    virtual bool moveTrackClip(const juce::String& clipId, float startBar)
+    {
+        juce::ignoreUnused(clipId, startBar);
+        return false;
+    }
+
+    virtual bool resizeTrackClip(const juce::String& clipId, float startBar, float lengthBars)
+    {
+        juce::ignoreUnused(clipId, startBar, lengthBars);
+        return false;
     }
 
     virtual bool loadFile(const juce::File& file)

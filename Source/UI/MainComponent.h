@@ -51,7 +51,8 @@ public:
 };
 
 class MainComponent final : public juce::AudioAppComponent,
-                            private juce::Timer
+                            private juce::Timer,
+                            private juce::ChangeListener
 {
 public:
     MainComponent();
@@ -67,14 +68,19 @@ public:
     void mouseDown(const juce::MouseEvent& event) override;
     void mouseDrag(const juce::MouseEvent& event) override;
     void mouseUp(const juce::MouseEvent& event) override;
+    bool attemptWindowClose();
 
 private:
     void timerCallback() override;
+    void changeListenerCallback(juce::ChangeBroadcaster* source) override;
     void addModule(const juce::String& type, juce::Point<float> position);
     void scanExternalPlugins();
     void seedDefaultSession();
+    void newSession();
     void saveSession();
+    void saveSessionToFile(const juce::File& file);
     void loadSession();
+    void loadSessionFromFile(const juce::File& file);
     void addAudioTrack();
     void addMidiTrack();
     void togglePlayback();
@@ -89,11 +95,18 @@ private:
     void toggleInspectorCollapsed();
     void toggleEditMode();
     void applyModeState();
+    juce::ValueTree createSessionState() const;
+    void loadSessionState(const juce::ValueTree& state);
+    void writeAutosaveSnapshot();
+    void clearAutosaveSnapshot();
+    void maybeRestoreAutosave();
+    bool confirmAbandonChanges(const juce::String& title, const juce::String& message);
 
     PatchGraph graph;
     PatchCanvas canvas;
     TrackView trackView;
 
+    juce::TextButton newButton { "New" };
     juce::TextButton saveButton { "Save" };
     juce::TextButton loadButton { "Open" };
     juce::TextButton transportButton { "Edit" };
@@ -124,9 +137,14 @@ private:
 
     std::optional<juce::Uuid> selectedNodeId;
     std::optional<juce::Uuid> selectedTrackId;
+    juce::File currentSessionFile;
+    juce::File autosaveFile;
     bool editMode = false;
     int inspectorPanelWidth = 300;
     int lastExpandedInspectorWidth = 300;
     bool resizingInspector = false;
     bool inspectorCollapsed = false;
+    bool dirty = false;
+    bool suppressDirtyTracking = false;
+    int autosaveTickCounter = 0;
 };

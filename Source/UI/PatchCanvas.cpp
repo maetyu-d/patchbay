@@ -474,6 +474,13 @@ bool PatchCanvas::keyPressed(const juce::KeyPress& key)
         return true;
     }
 
+    if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0))
+        return graph.undo();
+
+    if (key == juce::KeyPress('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)
+        || key == juce::KeyPress('y', juce::ModifierKeys::commandModifier, 0))
+        return graph.redo();
+
     const auto textCharacter = key.getTextCharacter();
 
     if (textCharacter == '=' || textCharacter == '+')
